@@ -1,0 +1,30 @@
+# Build output
+/cachepin
+/dist/
+*.exe
+
+# Local benchmark artifacts
+chart.csv
+*.ndjson
+
+# Go
+*.test
+*.out
+
+# Editor / OS
+.DS_Store
+*.swp
+
+# Claude tooling (never commit)
+.claude/
+CLAUDE.md
+
+# build scratch (ai-radar pipeline internals — never commit)
+.spawn.*
+.builder_*
+.build_metadata*
+.stage_*
+PUBLISH_BLOCKED.md
+BUILD_SETUP_NEXT_STEPS.md
+DRIFT_REPORT.md
+GIT_AUTHOR_DRIFT.md
