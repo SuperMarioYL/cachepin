@@ -15,7 +15,7 @@ import (
 	"encoding/hex"
 	"sync"
 
-	"github.com/supermario_leo/cachepin/internal/openai"
+	"github.com/SuperMarioYL/cachepin/internal/openai"
 )
 
 // Turn is the per-request report the tracker produces. It is the input to the

@@ -6,8 +6,8 @@
 
 <p align="center">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <a href="https://github.com/supermario_leo/cachepin/releases"><img src="https://img.shields.io/badge/release-WIP-orange.svg" alt="WIP" /></a>
-  <a href="https://github.com/supermario_leo/cachepin/actions"><img src="https://img.shields.io/badge/CI-go%20build%20%2B%20test-success.svg" alt="CI" /></a>
+  <a href="https://github.com/SuperMarioYL/cachepin/releases"><img src="https://img.shields.io/badge/release-WIP-orange.svg" alt="WIP" /></a>
+  <a href="https://github.com/SuperMarioYL/cachepin/actions"><img src="https://img.shields.io/badge/CI-go%20build%20%2B%20test-success.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/go-1.24-00ADD8.svg" alt="Go 1.24" />
   <img src="https://img.shields.io/badge/KV%20Cache-pinned-6d28d9.svg" alt="KV Cache" />
   <img src="https://img.shields.io/badge/Coding%20Agent-neutral-14b8a6.svg" alt="Coding Agent" />
@@ -36,7 +36,7 @@
 
 ```bash
 # 1. 安装单文件二进制
-go install github.com/supermario_leo/cachepin/cmd/cachepin@latest
+go install github.com/SuperMarioYL/cachepin/cmd/cachepin@latest
 
 # 2. 指向你的 OpenAI 兼容服务（llama.cpp、vLLM……）
 cachepin --upstream http://localhost:8080      # 监听 :8089
@@ -144,9 +144,9 @@ go run ./bench -turns 50 -out chart.csv
 ## 一句话分享
 
 ```
-CachePin —— 与 harness 无关的代理，让你的 Coding Agent 在多轮对话中保住 KV Cache。自建 llama.cpp/vLLM 每轮重算 3 万 token？把 OPENAI_BASE_URL 指过来。Go 写的，10 分钟即插即用。https://github.com/supermario_leo/cachepin
+CachePin —— 与 harness 无关的代理，让你的 Coding Agent 在多轮对话中保住 KV Cache。自建 llama.cpp/vLLM 每轮重算 3 万 token？把 OPENAI_BASE_URL 指过来。Go 写的，10 分钟即插即用。https://github.com/SuperMarioYL/cachepin
 ```
 
 ---
 
-<sub>由一次 <a href="https://github.com/supermario_leo/cachepin">ai-radar</a> 扫描生成（<code>workspace/projects/&lt;scan_id&gt;/F-plan/need_kvcache01</code>）。推送后可执行：<code>gh repo edit --add-topic kv-cache --add-topic coding-agent --add-topic llm-proxy</code></sub>
+<sub>由一次 <a href="https://github.com/SuperMarioYL/cachepin">ai-radar</a> 扫描生成（<code>workspace/projects/&lt;scan_id&gt;/F-plan/need_kvcache01</code>）。推送后可执行：<code>gh repo edit --add-topic kv-cache --add-topic coding-agent --add-topic llm-proxy</code></sub>

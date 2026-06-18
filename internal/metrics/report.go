@@ -10,7 +10,7 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/supermario_leo/cachepin/internal/session"
+	"github.com/SuperMarioYL/cachepin/internal/session"
 )
 
 // Reporter writes per-turn metrics. The human writer receives the terminal

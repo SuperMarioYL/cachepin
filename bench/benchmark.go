@@ -22,9 +22,9 @@ import (
 	"os"
 	"strings"
 
-	"github.com/supermario_leo/cachepin/internal/openai"
-	"github.com/supermario_leo/cachepin/internal/pin"
-	"github.com/supermario_leo/cachepin/internal/session"
+	"github.com/SuperMarioYL/cachepin/internal/openai"
+	"github.com/SuperMarioYL/cachepin/internal/pin"
+	"github.com/SuperMarioYL/cachepin/internal/session"
 )
 
 type row struct {

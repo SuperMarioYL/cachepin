@@ -5,8 +5,8 @@
 package pin
 
 import (
-	"github.com/supermario_leo/cachepin/internal/openai"
-	"github.com/supermario_leo/cachepin/internal/session"
+	"github.com/SuperMarioYL/cachepin/internal/openai"
+	"github.com/SuperMarioYL/cachepin/internal/session"
 )
 
 // Reconcile rewrites incoming so that it is an append-only extension of

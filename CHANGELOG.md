@@ -22,4 +22,4 @@ Initial release.
   multi-turn transcript (m3).
 - Bilingual README (English + 简体中文).
 
-[0.1.0]: https://github.com/supermario_leo/cachepin/releases/tag/v0.1.0
+[0.1.0]: https://github.com/SuperMarioYL/cachepin/releases/tag/v0.1.0

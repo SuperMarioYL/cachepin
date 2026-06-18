@@ -6,8 +6,8 @@
 
 <p align="center">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <a href="https://github.com/supermario_leo/cachepin/releases"><img src="https://img.shields.io/badge/release-WIP-orange.svg" alt="WIP" /></a>
-  <a href="https://github.com/supermario_leo/cachepin/actions"><img src="https://img.shields.io/badge/CI-go%20build%20%2B%20test-success.svg" alt="CI" /></a>
+  <a href="https://github.com/SuperMarioYL/cachepin/releases"><img src="https://img.shields.io/badge/release-WIP-orange.svg" alt="WIP" /></a>
+  <a href="https://github.com/SuperMarioYL/cachepin/actions"><img src="https://img.shields.io/badge/CI-go%20build%20%2B%20test-success.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/go-1.24-00ADD8.svg" alt="Go 1.24" />
   <img src="https://img.shields.io/badge/KV%20Cache-pinned-6d28d9.svg" alt="KV Cache" />
   <img src="https://img.shields.io/badge/Coding%20Agent-neutral-14b8a6.svg" alt="Coding Agent" />
@@ -36,7 +36,7 @@ If you self-host a model (llama.cpp, vLLM) and drive it with a **Coding Agent** 
 
 ```bash
 # 1. install the single binary
-go install github.com/supermario_leo/cachepin/cmd/cachepin@latest
+go install github.com/SuperMarioYL/cachepin/cmd/cachepin@latest
 
 # 2. point it at your OpenAI-compatible server (llama.cpp, vLLM, ...)
 cachepin --upstream http://localhost:8080      # listens on :8089
@@ -142,9 +142,9 @@ Issues and PRs welcome — file an issue describing your harness + server combo 
 ## Share this
 
 ```
-CachePin — the harness-neutral proxy that keeps your Coding Agent's KV Cache alive across turns. Self-hosting llama.cpp/vLLM and reprocessing 30k tokens every turn? Point OPENAI_BASE_URL at it. Go, 10-min drop-in. https://github.com/supermario_leo/cachepin
+CachePin — the harness-neutral proxy that keeps your Coding Agent's KV Cache alive across turns. Self-hosting llama.cpp/vLLM and reprocessing 30k tokens every turn? Point OPENAI_BASE_URL at it. Go, 10-min drop-in. https://github.com/SuperMarioYL/cachepin
 ```
 
 ---
 
-<sub>Generated from an <a href="https://github.com/supermario_leo/cachepin">ai-radar</a> scan (<code>workspace/projects/&lt;scan_id&gt;/F-plan/need_kvcache01</code>). After pushing: <code>gh repo edit --add-topic kv-cache --add-topic coding-agent --add-topic llm-proxy</code></sub>
+<sub>Generated from an <a href="https://github.com/SuperMarioYL/cachepin">ai-radar</a> scan (<code>workspace/projects/&lt;scan_id&gt;/F-plan/need_kvcache01</code>). After pushing: <code>gh repo edit --add-topic kv-cache --add-topic coding-agent --add-topic llm-proxy</code></sub>

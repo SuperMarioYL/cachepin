@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"testing"
 
-	"github.com/supermario_leo/cachepin/internal/openai"
+	"github.com/SuperMarioYL/cachepin/internal/openai"
 )
 
 func msg(role, content string) openai.Message {
