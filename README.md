@@ -19,9 +19,22 @@
 
 If you self-host a model (llama.cpp, vLLM) and drive it with a **Coding Agent** harness like Claude Code, Cursor, or opencode, you've paid this tax: the harness re-renders a tool result or compacts context, your message array changes at message 3, and the inference server's **KV Cache** invalidates from that point on — so it silently reprocesses 30k+ tokens every single turn. [@CreativelyBankrupt](https://twitter.com/CreativelyBankrupt) has been pointing at exactly this prefix-cache fragility; the r/LocalLLaMA "checkpoints" thread and bespoke agents like [Hmbown/CodeWhale](https://github.com/Hmbown/CodeWhale) work around it one harness at a time. CachePin is the portable version of that idea: a harness-neutral proxy that sits in front of *any* OpenAI-compatible server, shows you the exact mutation boundary, and pins requests back to append-only form so the cache survives. No agent fork, no model lock-in — point `OPENAI_BASE_URL` at it and keep working.
 
+## <img src="https://api.iconify.design/tabler:topology-star-3.svg?color=%236d28d9&width=24" height="22" align="absmiddle" alt=""> Architecture
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/atlas-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="./assets/atlas-light.svg">
+    <img src="./assets/atlas-light.svg" width="880" alt="A coding-agent harness sends OpenAI-compatible requests to the CachePin proxy, whose session tracker content-hashes each message to find the longest-common-prefix mutation boundary; pin mode reconciles mutated turns to append-only form; metrics are emitted per turn; requests forward to the upstream model server whose KV cache survives">
+  </picture>
+</p>
+
+Your coding agent points `OPENAI_BASE_URL` at CachePin instead of the model server. Inside the proxy boundary, the **session tracker** content-hashes every message and computes the longest common prefix against the canonical history — that boundary is exactly where the upstream prefix cache stops being valid. The **metrics** unit emits preserved-prefix %, reprocessed tokens, and the mutation index per turn; with `--pin` the **reconciler** rewrites a mutated request back to append-only form so the server-side **KV Cache** survives. Streaming `/v1/chat/completions` responses are relayed chunk-by-chunk, so the harness can't tell the proxy is there.
+
 ## Table of contents
 
 - [Quickstart (10 minutes)](#quickstart-10-minutes)
+- [Demo](#demo)
 - [What you'll see](#what-youll-see)
 - [How it works](#how-it-works)
 - [Configuration](#configuration)
@@ -47,7 +60,11 @@ export OPENAI_BASE_URL=http://localhost:8089
 
 Use your coding agent exactly as before. CachePin prints one line per turn; nothing else changes. When you want the cache *protected* instead of just *measured*, restart with `--pin`.
 
-> 📼 Demo coming soon — the [VHS tape](./assets/demo.tape) records a 30s asciinema cast (`assets/demo.cast`) showing reprocessed tokens collapse to ~0 once `--pin` is on.
+## <img src="https://api.iconify.design/tabler:photo.svg?color=%236d28d9&width=24" height="22" align="absmiddle" alt=""> Demo
+
+![CachePin demo — reprocessed tokens collapse to ~0 once --pin is on](assets/demo.gif)
+
+The [VHS tape](./docs/demo.tape) records the happy path: start CachePin in measure-only mode, watch a mutated turn reprocess ~31k tokens, then restart with `--pin` and watch the same turn drop back to zero.
 
 ## What you'll see
 
@@ -144,7 +161,3 @@ Issues and PRs welcome — file an issue describing your harness + server combo 
 ```
 CachePin — the harness-neutral proxy that keeps your Coding Agent's KV Cache alive across turns. Self-hosting llama.cpp/vLLM and reprocessing 30k tokens every turn? Point OPENAI_BASE_URL at it. Go, 10-min drop-in. https://github.com/SuperMarioYL/cachepin
 ```
-
----
-
-<sub>Generated from an <a href="https://github.com/SuperMarioYL/cachepin">ai-radar</a> scan (<code>workspace/projects/&lt;scan_id&gt;/F-plan/need_kvcache01</code>). After pushing: <code>gh repo edit --add-topic kv-cache --add-topic coding-agent --add-topic llm-proxy</code></sub>

@@ -19,9 +19,22 @@
 
 如果你自建模型（llama.cpp、vLLM），再用 Claude Code、Cursor、opencode 这类 **Coding Agent** harness 去驱动它，你大概率交过这笔「税」：harness 重渲染一个工具结果、或压缩一次上下文，消息数组在第 3 条变了，推理服务的 **KV Cache** 从那一条开始整段失效——于是每一轮都默默重算 3 万多个 token。[@CreativelyBankrupt](https://twitter.com/CreativelyBankrupt) 一直在提的正是这种前缀缓存的脆弱性；r/LocalLLaMA 的 "checkpoints" 帖子、以及 [Hmbown/CodeWhale](https://github.com/Hmbown/CodeWhale) 这类定制 agent，都是在一个个 harness 上各自打补丁。CachePin 把这个思路做成了可移植版：一个与 harness 无关的代理，挡在*任意* OpenAI 兼容服务前面，告诉你 mutation 到底发生在哪一条消息，并把请求重写回 append-only 形式，让缓存活下来。不用 fork agent，不锁模型——把 `OPENAI_BASE_URL` 指过来，照常干活。
 
+## <img src="https://api.iconify.design/tabler:topology-star-3.svg?color=%236d28d9&width=24" height="22" align="absmiddle" alt=""> 架构
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/atlas-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="./assets/atlas-light.svg">
+    <img src="./assets/atlas-light.svg" width="880" alt="Coding Agent harness 把 OpenAI 兼容请求发给 CachePin 代理；会话追踪器对每条消息做内容哈希，算出最长公共前缀的 mutation 边界；pin 模式把被改写的一轮重写回 append-only 形式；每轮输出指标；请求转发到上游模型服务，其 KV 缓存得以存活">
+  </picture>
+</p>
+
+你的 coding agent 把 `OPENAI_BASE_URL` 指向 CachePin 而非模型服务。在代理边界内，**会话追踪器**对每条消息做内容哈希，与规范历史算最长公共前缀——这个边界正好就是上游前缀缓存失效的位置。**指标**单元每轮输出 preserved-prefix %、重算 token 数与 mutation 索引；加上 `--pin` 后，**重写器**把被改写的请求重写回 append-only 形式，让服务端 **KV Cache** 存活。流式 `/v1/chat/completions` 响应逐块透传，harness 根本察觉不到代理的存在。
+
 ## 目录
 
 - [快速上手（10 分钟）](#快速上手10-分钟)
+- [演示](#演示)
 - [你会看到什么](#你会看到什么)
 - [工作原理](#工作原理)
 - [配置](#配置)
@@ -47,9 +60,13 @@ export OPENAI_BASE_URL=http://localhost:8089
 
 照常使用你的 coding agent，行为零变化。CachePin 每一轮打印一行；其余什么都不动。当你想从「量化」升级到「保护」时，加上 `--pin` 重启即可。
 
-> 📼 演示即将上线——[VHS 脚本](./assets/demo.tape)会录制一段约 30s 的 asciinema（`assets/demo.cast`），展示开启 `--pin` 后重算 token 数如何坍缩到 ~0。
-
 > 国内访问：仓库会同步推送 Gitee 镜像（GFW 友好），地址见 Releases 说明。
+
+## <img src="https://api.iconify.design/tabler:photo.svg?color=%236d28d9&width=24" height="22" align="absmiddle" alt=""> 演示
+
+![CachePin 演示——开启 --pin 后重算 token 数坍缩到 ~0](assets/demo.gif)
+
+[VHS 脚本](./docs/demo.tape) 录制了完整的 happy path：先以「仅量化」模式启动 CachePin，看到被改写的一轮重算 ~31k token；再加 `--pin` 重启，看到同一轮重新坍缩到零。
 
 ## 你会看到什么
 
@@ -146,7 +163,3 @@ go run ./bench -turns 50 -out chart.csv
 ```
 CachePin —— 与 harness 无关的代理，让你的 Coding Agent 在多轮对话中保住 KV Cache。自建 llama.cpp/vLLM 每轮重算 3 万 token？把 OPENAI_BASE_URL 指过来。Go 写的，10 分钟即插即用。https://github.com/SuperMarioYL/cachepin
 ```
-
----
-
-<sub>由一次 <a href="https://github.com/SuperMarioYL/cachepin">ai-radar</a> 扫描生成（<code>workspace/projects/&lt;scan_id&gt;/F-plan/need_kvcache01</code>）。推送后可执行：<code>gh repo edit --add-topic kv-cache --add-topic coding-agent --add-topic llm-proxy</code></sub>

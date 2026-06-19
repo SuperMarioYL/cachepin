@@ -1,0 +1,75 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 360" width="880" height="360"
+     font-family="Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif"
+     role="img" aria-label="CachePin architecture: a coding-agent harness sends OpenAI-compatible requests to the CachePin proxy, which content-hashes each message in the session tracker to find the longest-common-prefix mutation boundary, optionally reconciles mutated requests to append-only form in pin mode, emits per-turn metrics, and forwards to the upstream model server whose KV cache survives">
+  <defs>
+    <marker id="ah-d" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L6,3 L0,6 Z" fill="#5A5A66"/></marker>
+  </defs>
+  <rect x="0" y="0" width="880" height="360" fill="#1D1D1F"/>
+
+  <!-- proxy boundary frame -->
+  <rect x="232" y="40" width="402" height="296" rx="18" fill="none" stroke="#8985FF" stroke-opacity="0.45" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="252" y="62" font-size="13" font-weight="600" fill="#A8A4FF">CachePin proxy — one Go binary, stdlib only, fully transparent</text>
+
+  <!-- connectors -->
+  <g stroke="#3A3A44" stroke-width="1.6" fill="none">
+    <line x1="212" y1="196" x2="248" y2="196" marker-end="url(#ah-d)"/>
+    <line x1="618" y1="196" x2="664" y2="196" marker-end="url(#ah-d)"/>
+  </g>
+  <!-- streamed SSE response flows straight back to the harness -->
+  <g stroke="#2DC79A" stroke-width="1.4" fill="none" stroke-dasharray="4 4">
+    <path d="M664 232 L126 232 L126 250" marker-end="url(#ah-d)"/>
+  </g>
+  <text x="395" y="227" text-anchor="middle" font-size="10.5" fill="#5BE0BC">streaming SSE response — relayed chunk-by-chunk</text>
+
+  <!-- Coding Agent Harness -->
+  <g>
+    <rect x="40" y="124" width="172" height="100" rx="15" fill="#4DA3FF" fill-opacity="0.16" stroke="#4DA3FF" stroke-width="1.5"/>
+    <text x="126" y="158" text-anchor="middle" font-size="15" font-weight="600" fill="#9DCBFF">Coding Agent</text>
+    <text x="126" y="178" text-anchor="middle" font-size="12.5" fill="#9DCBFF">Claude Code · Cursor</text>
+    <text x="126" y="195" text-anchor="middle" font-size="11" fill="#A1A1A8">OPENAI_BASE_URL ➜ :8089</text>
+  </g>
+
+  <!-- Session Tracker -->
+  <g>
+    <rect x="252" y="82" width="170" height="118" rx="14" fill="#8985FF" fill-opacity="0.16" stroke="#8985FF" stroke-width="1.5"/>
+    <text x="337" y="106" text-anchor="middle" font-size="14" font-weight="600" fill="#B7B4FF">Session Tracker</text>
+    <g font-size="11" fill="#B7B4FF">
+      <rect x="266" y="118" width="142" height="30" rx="8" fill="#000000" fill-opacity="0.25" stroke="#8985FF" stroke-width="1.1"/>
+      <text x="276" y="137">content-hash each msg</text>
+      <rect x="266" y="154" width="142" height="30" rx="8" fill="#000000" fill-opacity="0.25" stroke="#8985FF" stroke-width="1.1"/>
+      <text x="276" y="173">longest common prefix</text>
+    </g>
+  </g>
+
+  <!-- Pin / Reconcile -->
+  <g>
+    <rect x="252" y="212" width="170" height="84" rx="14" fill="#8985FF" fill-opacity="0.12" stroke="#8985FF" stroke-width="1.5"/>
+    <text x="337" y="236" text-anchor="middle" font-size="14" font-weight="600" fill="#B7B4FF">Pin / Reconcile</text>
+    <text x="337" y="257" text-anchor="middle" font-size="11" fill="#B7B4FF">--pin: rewrite mutated</text>
+    <text x="337" y="273" text-anchor="middle" font-size="11" fill="#B7B4FF">turn to append-only form</text>
+    <text x="337" y="289" text-anchor="middle" font-size="10.5" fill="#A1A1A8">keeps the prefix cache alive</text>
+  </g>
+
+  <!-- Metrics -->
+  <g>
+    <rect x="446" y="124" width="172" height="148" rx="14" fill="#2DC79A" fill-opacity="0.12" stroke="#2DC79A" stroke-width="1.5"/>
+    <text x="532" y="148" text-anchor="middle" font-size="14" font-weight="600" fill="#5BE0BC">Metrics</text>
+    <text x="532" y="167" text-anchor="middle" font-size="10.5" fill="#A1A1A8">per turn → stdout / NDJSON</text>
+    <g font-size="11" fill="#5BE0BC">
+      <rect x="460" y="178" width="144" height="26" rx="7" fill="#2DC79A" fill-opacity="0.18" stroke="#2DC79A" stroke-width="1"/>
+      <text x="470" y="195">preserved prefix %</text>
+      <rect x="460" y="210" width="144" height="26" rx="7" fill="#2DC79A" fill-opacity="0.18" stroke="#2DC79A" stroke-width="1"/>
+      <text x="470" y="227">reprocessed tokens</text>
+      <rect x="460" y="242" width="144" height="26" rx="7" fill="#2DC79A" fill-opacity="0.18" stroke="#2DC79A" stroke-width="1"/>
+      <text x="470" y="259">mutation boundary</text>
+    </g>
+  </g>
+
+  <!-- Upstream model server -->
+  <g>
+    <rect x="668" y="124" width="172" height="100" rx="15" fill="#4DA3FF" fill-opacity="0.16" stroke="#4DA3FF" stroke-width="1.5"/>
+    <text x="754" y="158" text-anchor="middle" font-size="15" font-weight="600" fill="#9DCBFF">Model Server</text>
+    <text x="754" y="178" text-anchor="middle" font-size="12.5" fill="#9DCBFF">llama.cpp · vLLM</text>
+    <text x="754" y="195" text-anchor="middle" font-size="11" fill="#A1A1A8">server-side KV Cache</text>
+  </g>
+</svg>
