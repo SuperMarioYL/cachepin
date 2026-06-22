@@ -46,6 +46,13 @@ type Turn struct {
 	ReprocessedTokens int
 	// TotalTokens estimates the size of this request.
 	TotalTokens int
+	// Layout is the byte-level context-layout diff against the prior canonical
+	// history: the exact byte offset and message field where the cache prefix
+	// first diverged. On a clean append Layout.Diverged is false. It is the m4
+	// linter output and deepens the message-level Mutated/MutationIndex with the
+	// precise field (system prompt, tool schema, ordering, whitespace) that broke
+	// prefix-stability.
+	Layout openai.LayoutDiff
 }
 
 // Session is the append-only ground truth for one conversation.
@@ -100,6 +107,14 @@ func (t *Tracker) Observe(msgs []openai.Message) Turn {
 		mutIndex = lcp
 	}
 
+	// m4 context-layout linter: byte-level diff against the prior canonical
+	// history. Only meaningful once a canonical history exists (prevLen > 0); the
+	// first turn has nothing to diverge from.
+	var layout openai.LayoutDiff
+	if prevLen > 0 {
+		layout = openai.LintLayout(s.canonical, msgs)
+	}
+
 	s.turns++
 	turn := Turn{
 		SessionID:          id,
@@ -112,6 +127,7 @@ func (t *Tracker) Observe(msgs []openai.Message) Turn {
 		PreservedPrefixPct: pct,
 		ReprocessedTokens:  reprocessed,
 		TotalTokens:        EstimateTokens(msgs),
+		Layout:             layout,
 	}
 
 	s.canonical = cloneMessages(msgs)

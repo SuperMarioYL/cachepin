@@ -65,8 +65,8 @@ func run(turns int) []row {
 	noPin := session.NewTracker()
 	pinned := session.NewTracker()
 
-	history := seedHistory()           // grows append-only as the "true" conversation
-	var canonical []openai.Message     // pin's append-only ground truth
+	history := seedHistory()       // grows append-only as the "true" conversation
+	var canonical []openai.Message // pin's append-only ground truth
 	rows := make([]row, 0, turns)
 	var cumNo, cumPin int
 
@@ -147,9 +147,11 @@ func filler() string {
 	return strings.Repeat("context line that occupies space in the prompt. ", 40)
 }
 
-func system(s string) openai.Message    { return openai.Message{Role: "system", Content: jsonString(s)} }
-func user(s string) openai.Message      { return openai.Message{Role: "user", Content: jsonString(s)} }
-func assistant(s string) openai.Message { return openai.Message{Role: "assistant", Content: jsonString(s)} }
+func system(s string) openai.Message { return openai.Message{Role: "system", Content: jsonString(s)} }
+func user(s string) openai.Message   { return openai.Message{Role: "user", Content: jsonString(s)} }
+func assistant(s string) openai.Message {
+	return openai.Message{Role: "assistant", Content: jsonString(s)}
+}
 
 func jsonString(s string) json.RawMessage {
 	b, _ := json.Marshal(s)

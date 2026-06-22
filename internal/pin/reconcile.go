@@ -17,26 +17,28 @@ import (
 // to fix.
 //
 // When the harness rewrote or dropped a previously established message, the
-// cached canonical prefix is preserved and only the genuinely new tail (the
-// messages beyond the canonical length) is re-attached. A mutation that does not
-// grow the message count has no recoverable new tail, so canonical is forwarded
-// as-is: cache survival is prioritized over honoring an in-place edit, which is
-// the explicit tradeoff of pin mode (see mvp_plan.md §2).
+// cached canonical prefix is preserved and every message the harness sent beyond
+// the common-prefix boundary is re-attached on top of it. This is the §2
+// contract: the reconciled array is canonical[:lcp] + incoming[lcp:], except the
+// preserved prefix is taken from the full canonical history (canonical[:lcp] is
+// identical to incoming[:lcp] by definition of the LCP, so this equals
+// canonical + incoming[lcp:]). Cache survival is prioritized over honoring an
+// in-place edit, which is the explicit tradeoff of pin mode (see mvp_plan.md §2).
+//
+// Reconstructing from the LCP boundary — rather than slicing the last
+// len(incoming)-len(canonical) messages — is what keeps genuinely-new turns
+// intact when the harness drops an earlier message and appends new ones (context
+// compaction): a last-N slice undercounts the new tail and silently drops needed
+// turns whenever the mutation changes the message count.
 func Reconcile(canonical, incoming []openai.Message) ([]openai.Message, bool) {
 	lcp := session.LongestCommonPrefix(canonical, incoming)
 	if lcp == len(canonical) {
 		return incoming, false
 	}
 
-	newCount := len(incoming) - len(canonical)
-	if newCount < 0 {
-		newCount = 0
-	}
-
-	reconciled := make([]openai.Message, 0, len(canonical)+newCount)
+	tail := incoming[lcp:]
+	reconciled := make([]openai.Message, 0, len(canonical)+len(tail))
 	reconciled = append(reconciled, canonical...)
-	if newCount > 0 {
-		reconciled = append(reconciled, incoming[len(incoming)-newCount:]...)
-	}
+	reconciled = append(reconciled, tail...)
 	return reconciled, true
 }

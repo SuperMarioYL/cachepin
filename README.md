@@ -1,12 +1,16 @@
 <p align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=0:6d28d9,100:14b8a6&height=180&section=header&text=CachePin&fontColor=ffffff&fontSize=70&desc=Keep%20your%20coding%20agent%27s%20KV%20Cache%20alive%20across%20turns&descAlignY=68&descSize=18" alt="CachePin" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/hero-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="./assets/hero-light.svg">
+    <img src="./assets/hero-light.svg" width="880" alt="CachePin — keep your coding agent's KV Cache alive across turns" />
+  </picture>
 </p>
 
 <p align="center"><strong>English</strong> | <a href="./README.zh-CN.md">简体中文</a></p>
 
 <p align="center">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <a href="https://github.com/SuperMarioYL/cachepin/releases"><img src="https://img.shields.io/badge/release-WIP-orange.svg" alt="WIP" /></a>
+  <a href="https://github.com/SuperMarioYL/cachepin/releases"><img src="https://img.shields.io/badge/release-v0.2.0-6d28d9.svg" alt="release v0.2.0" /></a>
   <a href="https://github.com/SuperMarioYL/cachepin/actions"><img src="https://img.shields.io/badge/CI-go%20build%20%2B%20test-success.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/go-1.24-00ADD8.svg" alt="Go 1.24" />
   <img src="https://img.shields.io/badge/KV%20Cache-pinned-6d28d9.svg" alt="KV Cache" />
@@ -74,10 +78,13 @@ A clean, append-only session reuses the whole prefix:
 turn 12 | prefix preserved 100% | 0 tokens reprocessed
 ```
 
-When the harness rewrites history, CachePin names the exact boundary:
+When the harness rewrites history, CachePin names the exact boundary — and the
+**context-layout linter** pinpoints the precise byte offset and the message field
+that broke prefix-stability (the system prompt, a re-ordered tool schema, a
+whitespace re-render, …):
 
 ```
-turn 13 | prefix preserved 41% | ~31k tokens reprocessed | MUTATION at msg[3]
+turn 13 | prefix preserved 41% | ~31k tokens reprocessed | MUTATION at msg[3] | content broke prefix at byte 14237
 ```
 
 Add `--pin` and the same mutated turn is reconciled to append-only form before it reaches the server, so the **KV Cache** survives and the reprocessed count drops back toward zero.
@@ -86,15 +93,15 @@ Add `--pin` and the same mutated turn is reconciled to append-only form before i
 <summary>machine-readable output (<code>--ndjson</code>)</summary>
 
 ```json
-{"ts":"2026-05-29T12:00:00Z","session_id":"a1b2c3","turn":13,"preserved_prefix_pct":41.0,"reprocessed_tokens":31000,"total_tokens":52000,"mutated":true,"mutation_index":3,"prev_len":24,"incoming_len":26,"lcp":3}
+{"ts":"2026-06-22T12:00:00Z","session_id":"a1b2c3","turn":13,"preserved_prefix_pct":41.0,"reprocessed_tokens":31000,"total_tokens":52000,"mutated":true,"mutation_index":3,"prev_len":24,"incoming_len":26,"lcp":3,"layout_diverged":true,"layout_byte_offset":14237,"layout_msg_index":3,"layout_field":"content"}
 ```
 
-One JSON object per line — the same stream the benchmark and any dashboard you build consume.
+One JSON object per line — the same stream the benchmark and any dashboard you build consume. The `layout_*` fields are the linter's byte-level diagnosis: `layout_field` is one of `role`, `content`, `name`, `tool_calls`, `tool_call_id`, `field-order` (JSON framing / key order changed), or `message-count` (an earlier message was dropped).
 </details>
 
 ## How it works
 
-The core primitive is a **canonical append-only session history** plus one contract: every forwarded request's message array must be a *prefix-extension* of it. CachePin content-hashes each message, computes the longest common prefix against the canonical history, and that boundary is exactly where the server's prefix cache stops being valid.
+The core primitive is a **canonical append-only session history** plus one contract: every forwarded request's message array must be a *prefix-extension* of it. CachePin content-hashes each message, computes the longest common prefix against the canonical history, and that boundary is exactly where the server's prefix cache stops being valid. The **context-layout linter** then drills into that boundary at the byte level and names which field broke prefix-stability, so you can fix the cache-busting churn at its source.
 
 ```
 harness ──HTTP──▶ proxy ──▶ session tracker ──▶ metrics ──▶ stdout / NDJSON
@@ -144,8 +151,9 @@ If you want a batteries-included agent, CodeWhale is the better answer. If you w
 ## Roadmap
 
 - [x] **m1 — proxy passthrough**: transparent OpenAI-compatible reverse proxy with SSE streaming; the harness can't tell it's there.
-- [ ] **m2 — track & report**: per-session canonical-history tracker emitting preserved-prefix %, reprocessed tokens, and mutation events per turn.
-- [ ] **m3 — pin & bench**: `--pin` reconciliation that keeps the upstream KV Cache alive, plus the reproducible 50-turn benchmark.
+- [x] **m2 — track & report**: per-session canonical-history tracker emitting preserved-prefix %, reprocessed tokens, and mutation events per turn.
+- [x] **m3 — pin & bench**: `--pin` reconciliation that keeps the upstream KV Cache alive, plus the reproducible 50-turn benchmark.
+- [x] **m4 — context-layout linter** *(v0.2.0)*: byte-level prefix diff that names the exact offset and field that broke prefix-stability.
 - [ ] **Future**: protocol spec for harness ↔ server append-only context; ecosystem docs links.
 
 ## Contributing
@@ -154,7 +162,7 @@ Issues and PRs welcome — file an issue describing your harness + server combo 
 
 ## License
 
-[MIT](./LICENSE) © supermario_leo.
+MIT © 2026 SuperMarioYL
 
 ## Share this
 

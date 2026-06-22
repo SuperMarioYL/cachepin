@@ -40,6 +40,13 @@ type record struct {
 	PrevLen            int     `json:"prev_len"`
 	IncomingLen        int     `json:"incoming_len"`
 	LCP                int     `json:"lcp"`
+	// Layout fields are the m4 context-layout linter output: the exact byte
+	// offset and message field where the cache prefix first diverged. They are
+	// omitted on a clean append (LayoutDiverged false).
+	LayoutDiverged   bool   `json:"layout_diverged"`
+	LayoutByteOffset int    `json:"layout_byte_offset,omitempty"`
+	LayoutMsgIndex   int    `json:"layout_msg_index,omitempty"`
+	LayoutField      string `json:"layout_field,omitempty"`
 }
 
 // Report writes the turn to both configured sinks.
@@ -62,6 +69,10 @@ func (r *Reporter) Report(t session.Turn) error {
 			PrevLen:            t.PrevLen,
 			IncomingLen:        t.IncomingLen,
 			LCP:                t.LCP,
+			LayoutDiverged:     t.Layout.Diverged,
+			LayoutByteOffset:   t.Layout.ByteOffset,
+			LayoutMsgIndex:     t.Layout.MessageIndex,
+			LayoutField:        t.Layout.Field,
 		}
 		b, err := json.Marshal(rec)
 		if err != nil {
@@ -83,6 +94,11 @@ func HumanLine(t session.Turn) string {
 		t.TurnNum, t.PreservedPrefixPct, humanizeTokens(t.ReprocessedTokens))
 	if t.Mutated {
 		line += fmt.Sprintf(" | MUTATION at msg[%d]", t.MutationIndex)
+	}
+	// m4 linter: when the layout diff pinpoints a within-message break, name the
+	// exact byte offset and the field that broke prefix-stability.
+	if t.Layout.Diverged && t.Layout.Field != "" && t.Layout.Field != "message-count" {
+		line += fmt.Sprintf(" | %s broke prefix at byte %d", t.Layout.Field, t.Layout.ByteOffset)
 	}
 	return line
 }

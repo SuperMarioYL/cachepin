@@ -1,12 +1,16 @@
 <p align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=0:6d28d9,100:14b8a6&height=180&section=header&text=CachePin&fontColor=ffffff&fontSize=70&desc=%E8%AE%A9%E4%BD%A0%E7%9A%84%20Coding%20Agent%20%E5%9C%A8%E5%A4%9A%E8%BD%AE%E5%AF%B9%E8%AF%9D%E4%B8%AD%E4%BF%9D%E4%BD%8F%20KV%20Cache&descAlignY=68&descSize=16" alt="CachePin" />
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/hero-dark.svg">
+    <source media="(prefers-color-scheme: light)" srcset="./assets/hero-light.svg">
+    <img src="./assets/hero-light.svg" width="880" alt="CachePin — 让你的 Coding Agent 在多轮对话中保住 KV Cache" />
+  </picture>
 </p>
 
 <p align="center"><a href="./README.md">English</a> | <strong>简体中文</strong></p>
 
 <p align="center">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <a href="https://github.com/SuperMarioYL/cachepin/releases"><img src="https://img.shields.io/badge/release-WIP-orange.svg" alt="WIP" /></a>
+  <a href="https://github.com/SuperMarioYL/cachepin/releases"><img src="https://img.shields.io/badge/release-v0.2.0-6d28d9.svg" alt="release v0.2.0" /></a>
   <a href="https://github.com/SuperMarioYL/cachepin/actions"><img src="https://img.shields.io/badge/CI-go%20build%20%2B%20test-success.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/go-1.24-00ADD8.svg" alt="Go 1.24" />
   <img src="https://img.shields.io/badge/KV%20Cache-pinned-6d28d9.svg" alt="KV Cache" />
@@ -76,10 +80,10 @@ export OPENAI_BASE_URL=http://localhost:8089
 turn 12 | prefix preserved 100% | 0 tokens reprocessed
 ```
 
-一旦 harness 改写了历史，CachePin 会点名那条边界：
+一旦 harness 改写了历史，CachePin 会点名那条边界——而**上下文布局 linter**会进一步指出前缀**究竟在哪个字节偏移**、被**哪个消息字段**（system prompt、被重排的工具 schema、空白重渲染……）打破：
 
 ```
-turn 13 | prefix preserved 41% | ~31k tokens reprocessed | MUTATION at msg[3]
+turn 13 | prefix preserved 41% | ~31k tokens reprocessed | MUTATION at msg[3] | content broke prefix at byte 14237
 ```
 
 加上 `--pin`，同样这一轮会在抵达服务端之前被重写回 append-only 形式，于是 **KV Cache** 得以保留，重算 token 数重新逼近零。
@@ -88,15 +92,15 @@ turn 13 | prefix preserved 41% | ~31k tokens reprocessed | MUTATION at msg[3]
 <summary>机器可读输出（<code>--ndjson</code>）</summary>
 
 ```json
-{"ts":"2026-05-29T12:00:00Z","session_id":"a1b2c3","turn":13,"preserved_prefix_pct":41.0,"reprocessed_tokens":31000,"total_tokens":52000,"mutated":true,"mutation_index":3,"prev_len":24,"incoming_len":26,"lcp":3}
+{"ts":"2026-06-22T12:00:00Z","session_id":"a1b2c3","turn":13,"preserved_prefix_pct":41.0,"reprocessed_tokens":31000,"total_tokens":52000,"mutated":true,"mutation_index":3,"prev_len":24,"incoming_len":26,"lcp":3,"layout_diverged":true,"layout_byte_offset":14237,"layout_msg_index":3,"layout_field":"content"}
 ```
 
-每行一个 JSON 对象——基准测试和你自己搭的任何面板消费的都是这条流。
+每行一个 JSON 对象——基准测试和你自己搭的任何面板消费的都是这条流。`layout_*` 字段是 linter 的字节级诊断：`layout_field` 取值为 `role`、`content`、`name`、`tool_calls`、`tool_call_id`、`field-order`（JSON 框架／键顺序变了）或 `message-count`（有更早的消息被丢弃）。
 </details>
 
 ## 工作原理
 
-核心原语是一份**规范化的 append-only 会话历史**，外加一条约定：任何转发出去的请求，其消息数组必须是它的*前缀扩展*。CachePin 对每条消息做内容哈希，与规范历史算最长公共前缀，那个边界正好就是服务端前缀缓存失效的位置。
+核心原语是一份**规范化的 append-only 会话历史**，外加一条约定：任何转发出去的请求，其消息数组必须是它的*前缀扩展*。CachePin 对每条消息做内容哈希，与规范历史算最长公共前缀，那个边界正好就是服务端前缀缓存失效的位置。**上下文布局 linter**再在这个边界上做字节级深挖，点名是哪个字段打破了前缀稳定性，让你能从源头修掉那些「烧缓存」的抖动。
 
 ```
 harness ──HTTP──▶ proxy ──▶ session tracker ──▶ metrics ──▶ stdout / NDJSON
@@ -146,8 +150,9 @@ go run ./bench -turns 50 -out chart.csv
 ## 路线图
 
 - [x] **m1 — 代理透传**：透明的 OpenAI 兼容反向代理，支持 SSE 流式；harness 察觉不到它的存在。
-- [ ] **m2 — 追踪与上报**：按会话维护规范历史，每轮输出 preserved-prefix %、重算 token 数、mutation 事件。
-- [ ] **m3 — pin 与基准**：`--pin` 重写让上游 KV Cache 存活，外加可复现的 50 轮基准测试。
+- [x] **m2 — 追踪与上报**：按会话维护规范历史，每轮输出 preserved-prefix %、重算 token 数、mutation 事件。
+- [x] **m3 — pin 与基准**：`--pin` 重写让上游 KV Cache 存活，外加可复现的 50 轮基准测试。
+- [x] **m4 — 上下文布局 linter** *(v0.2.0)*：字节级前缀 diff，点名打破前缀稳定性的确切偏移与字段。
 - [ ] **未来**：harness ↔ server 的 append-only 上下文协议规范；生态文档链接。
 
 ## 参与贡献
@@ -156,7 +161,7 @@ go run ./bench -turns 50 -out chart.csv
 
 ## 许可证
 
-[MIT](./LICENSE) © supermario_leo。
+MIT © 2026 SuperMarioYL
 
 ## 一句话分享
 
