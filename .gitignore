@@ -19,7 +19,7 @@ chart.csv
 .claude/
 CLAUDE.md
 
-# build scratch (ai-radar pipeline internals — never commit)
+# build scratch (pipeline internals — never commit)
 .spawn.*
 .builder_*
 .build_metadata*
