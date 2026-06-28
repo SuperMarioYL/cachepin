@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <a href="https://github.com/SuperMarioYL/cachepin/releases"><img src="https://img.shields.io/badge/release-v0.2.0-6d28d9.svg" alt="release v0.2.0" /></a>
+  <a href="https://github.com/SuperMarioYL/cachepin/releases"><img src="https://img.shields.io/badge/release-v0.3.0-6d28d9.svg" alt="release v0.3.0" /></a>
   <a href="https://github.com/SuperMarioYL/cachepin/actions"><img src="https://img.shields.io/badge/CI-go%20build%20%2B%20test-success.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/go-1.24-00ADD8.svg" alt="Go 1.24" />
   <img src="https://img.shields.io/badge/KV%20Cache-pinned-6d28d9.svg" alt="KV Cache" />
@@ -86,7 +86,7 @@ turn 12 | prefix preserved 100% | 0 tokens reprocessed
 turn 13 | prefix preserved 41% | ~31k tokens reprocessed | MUTATION at msg[3] | content broke prefix at byte 14237
 ```
 
-加上 `--pin`，同样这一轮会在抵达服务端之前被重写回 append-only 形式，于是 **KV Cache** 得以保留，重算 token 数重新逼近零。
+加上 `--pin`，同样这一轮会在抵达服务端之前被重写回 append-only 形式，于是 **KV Cache** 得以保留，重算 token 数重新逼近零。`--pin` 下的每轮输出现在与基准测试完全一致——被重写回的一轮会报 `0 tokens reprocessed`，所以 `--ndjson` 面板反映的是上游真实情况，而不是原始 mutation。
 
 <details>
 <summary>机器可读输出（<code>--ndjson</code>）</summary>
@@ -122,6 +122,9 @@ CachePin 全靠命令行参数配置——没有配置文件。
 | `--listen` | string | `:8089` | CachePin 代理绑定的地址 |
 | `--pin` | bool | `false` | 把被改写的请求重写回 append-only 形式，保住上游 KV Cache |
 | `--ndjson` | string | *（关闭）* | 额外把每轮指标以 NDJSON 写入该路径 |
+| `--max-sessions` | int | `1024` | 追踪会话数的上限；超过后按 LRU 淘汰最久未用的会话（`0` = 不限） |
+
+CachePin 的会话状态按进程驻留内存，不落盘。`--max-sessions` 上限让这个内存占用在长期运行或共享部署下保持有界——超过上限就淘汰最空闲的会话，于是新会话不断涌入也不会让内存无限增长。
 
 ## 基准测试
 
@@ -152,7 +155,8 @@ go run ./bench -turns 50 -out chart.csv
 - [x] **m1 — 代理透传**：透明的 OpenAI 兼容反向代理，支持 SSE 流式；harness 察觉不到它的存在。
 - [x] **m2 — 追踪与上报**：按会话维护规范历史，每轮输出 preserved-prefix %、重算 token 数、mutation 事件。
 - [x] **m3 — pin 与基准**：`--pin` 重写让上游 KV Cache 存活，外加可复现的 50 轮基准测试。
-- [x] **m4 — 上下文布局 linter** *(v0.2.0)*：字节级前缀 diff，点名打破前缀稳定性的确切偏移与字段。
+- [x] **m4 — 上下文布局 linter** *(v0.2.0，v0.3.0 加深)*：字节级前缀 diff，点名打破前缀稳定性的确切偏移与字段。v0.3.0 让它的精确定位坐标始终在场（offset 0 / `msg[0]` 保留，无发散统一为 `-1`），每轮输出一致的字段集。
+- [x] **v0.3.0 加固**：让会话存储在多会话并发下不再崩溃，`--pin` 每轮指标与基准测试对齐，并用 LRU 会话淘汰（`--max-sessions`）限制内存。
 - [ ] **未来**：harness ↔ server 的 append-only 上下文协议规范；生态文档链接。
 
 ## 参与贡献

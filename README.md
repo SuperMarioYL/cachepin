@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <a href="https://github.com/SuperMarioYL/cachepin/releases"><img src="https://img.shields.io/badge/release-v0.2.0-6d28d9.svg" alt="release v0.2.0" /></a>
+  <a href="https://github.com/SuperMarioYL/cachepin/releases"><img src="https://img.shields.io/badge/release-v0.3.0-6d28d9.svg" alt="release v0.3.0" /></a>
   <a href="https://github.com/SuperMarioYL/cachepin/actions"><img src="https://img.shields.io/badge/CI-go%20build%20%2B%20test-success.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/go-1.24-00ADD8.svg" alt="Go 1.24" />
   <img src="https://img.shields.io/badge/KV%20Cache-pinned-6d28d9.svg" alt="KV Cache" />
@@ -87,7 +87,7 @@ whitespace re-render, …):
 turn 13 | prefix preserved 41% | ~31k tokens reprocessed | MUTATION at msg[3] | content broke prefix at byte 14237
 ```
 
-Add `--pin` and the same mutated turn is reconciled to append-only form before it reaches the server, so the **KV Cache** survives and the reprocessed count drops back toward zero.
+Add `--pin` and the same mutated turn is reconciled to append-only form before it reaches the server, so the **KV Cache** survives and the reprocessed count drops back toward zero. The per-turn line under `--pin` now matches the benchmark exactly — a reconciled turn reports `0 tokens reprocessed`, so a `--ndjson` dashboard reflects upstream reality instead of the raw mutation.
 
 <details>
 <summary>machine-readable output (<code>--ndjson</code>)</summary>
@@ -123,6 +123,9 @@ CachePin is configured entirely by flags — no config file.
 | `--listen` | string | `:8089` | Address CachePin's proxy binds to |
 | `--pin` | bool | `false` | Reconcile mutated requests to append-only form so the upstream KV Cache survives |
 | `--ndjson` | string | *(off)* | Path to also write one machine-readable metrics object per turn |
+| `--max-sessions` | int | `1024` | Cap on tracked conversations; the least-recently-used session is evicted past it (`0` = unbounded) |
+
+CachePin holds session state in memory per process and never persists it to disk. The `--max-sessions` cap keeps that footprint bounded for a long-lived or shared deployment — past it the idlest session is evicted, so memory does not grow without limit as new conversations arrive.
 
 ## Benchmark
 
@@ -153,7 +156,8 @@ If you want a batteries-included agent, CodeWhale is the better answer. If you w
 - [x] **m1 — proxy passthrough**: transparent OpenAI-compatible reverse proxy with SSE streaming; the harness can't tell it's there.
 - [x] **m2 — track & report**: per-session canonical-history tracker emitting preserved-prefix %, reprocessed tokens, and mutation events per turn.
 - [x] **m3 — pin & bench**: `--pin` reconciliation that keeps the upstream KV Cache alive, plus the reproducible 50-turn benchmark.
-- [x] **m4 — context-layout linter** *(v0.2.0)*: byte-level prefix diff that names the exact offset and field that broke prefix-stability.
+- [x] **m4 — context-layout linter** *(v0.2.0, deepened v0.3.0)*: byte-level prefix diff that names the exact offset and field that broke prefix-stability. v0.3.0 makes its pinpoint coordinates always present (offset 0 / `msg[0]` preserved, no-divergence unified to `-1`) so every turn emits a consistent field set.
+- [x] **v0.3.0 hardening**: guard the session store against concurrent multi-session traffic, make `--pin` per-turn metrics match the benchmark, and bound memory with LRU session eviction (`--max-sessions`).
 - [ ] **Future**: protocol spec for harness ↔ server append-only context; ecosystem docs links.
 
 ## Contributing

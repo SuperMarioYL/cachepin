@@ -11,6 +11,7 @@
 package session
 
 import (
+	"container/list"
 	"crypto/sha256"
 	"encoding/hex"
 	"sync"
@@ -61,19 +62,46 @@ type Session struct {
 	canonical  []openai.Message
 	lastPrefix int
 	turns      int
+	// elem is this session's node in the Tracker's LRU order list, kept so
+	// eviction and recency updates are O(1).
+	elem *list.Element
 }
+
+// DefaultMaxSessions bounds the number of conversations a long-lived proxy
+// tracks at once. Past it the least-recently-used session is evicted, so memory
+// stays bounded under a shared/team deployment that starts fresh sessions per
+// task. Each entry pins the full canonical message history (hundreds of KB to
+// MB for a long coding conversation), so without a cap the map leaks forever.
+const DefaultMaxSessions = 1024
 
 // Tracker observes chat-completions requests and maintains a Session per
 // conversation. It is safe for concurrent use; the proxy may serve overlapping
-// requests for different sessions.
+// requests for different sessions. Its sessions map is bounded by an LRU cap
+// (maxSessions) so a long-lived proxy does not leak memory, and it is the single
+// owner of the reconciled-canonical store that pin mode reads from — folding
+// that store in here (v0.3.0) removed a parallel, unguarded map from main that
+// crashed under concurrent multi-session traffic.
 type Tracker struct {
-	mu       sync.Mutex
-	sessions map[string]*Session
+	mu          sync.Mutex
+	sessions    map[string]*Session
+	order       *list.List // front = most recently used; back = next eviction victim
+	maxSessions int        // 0 = unbounded
 }
 
-// NewTracker returns an empty Tracker.
+// NewTracker returns a Tracker with the default max-sessions cap.
 func NewTracker() *Tracker {
-	return &Tracker{sessions: make(map[string]*Session)}
+	return NewTrackerWithMax(DefaultMaxSessions)
+}
+
+// NewTrackerWithMax returns a Tracker whose sessions map is bounded to max
+// sessions via LRU eviction. A non-positive max disables eviction (unbounded),
+// which is useful for tests and short-lived processes that never risk the leak.
+func NewTrackerWithMax(max int) *Tracker {
+	return &Tracker{
+		sessions:    make(map[string]*Session),
+		order:       list.New(),
+		maxSessions: max,
+	}
 }
 
 // Observe records an incoming request's message array and returns the per-turn
@@ -87,7 +115,13 @@ func (t *Tracker) Observe(msgs []openai.Message) Turn {
 	s := t.sessions[id]
 	if s == nil {
 		s = &Session{ID: id}
+		s.elem = t.order.PushFront(s)
 		t.sessions[id] = s
+		t.evictIfNeeded()
+	} else {
+		// Mark this session most-recently-used so the LRU victim is the one
+		// idle the longest, not merely the oldest insertion.
+		t.order.MoveToFront(s.elem)
 	}
 
 	prevLen := len(s.canonical)
@@ -108,12 +142,11 @@ func (t *Tracker) Observe(msgs []openai.Message) Turn {
 	}
 
 	// m4 context-layout linter: byte-level diff against the prior canonical
-	// history. Only meaningful once a canonical history exists (prevLen > 0); the
-	// first turn has nothing to diverge from.
-	var layout openai.LayoutDiff
-	if prevLen > 0 {
-		layout = openai.LintLayout(s.canonical, msgs)
-	}
+	// history. Always call it — the first turn (empty canonical) and any clean
+	// append both resolve to the NoDivergence sentinel, so every turn emits the
+	// same NDJSON field set. The v0.2.0 path skipped the first turn and left a
+	// zero-value LayoutDiff, which dropped layout_msg_index from turn 1's NDJSON.
+	layout := openai.LintLayout(s.canonical, msgs)
 
 	s.turns++
 	turn := Turn{
@@ -133,6 +166,46 @@ func (t *Tracker) Observe(msgs []openai.Message) Turn {
 	s.canonical = cloneMessages(msgs)
 	s.lastPrefix = len(msgs)
 	return turn
+}
+
+// Canonical returns a clone of the canonical message history the tracker holds
+// for sid, or nil if the session is unknown (never observed, or evicted). It is
+// the pin reconciler's source of the pre-mutation ground truth: reading it from
+// the tracker rather than a parallel map gives eviction a single owner and
+// removes the unguarded map that crashed under concurrent multi-session traffic.
+func (t *Tracker) Canonical(sid string) []openai.Message {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	s := t.sessions[sid]
+	if s == nil {
+		return nil
+	}
+	return cloneMessages(s.canonical)
+}
+
+// Len returns the number of sessions currently tracked, which the max-sessions
+// cap keeps bounded. Intended for ops/diagnostics and tests.
+func (t *Tracker) Len() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return len(t.sessions)
+}
+
+// evictIfNeeded enforces the max-sessions cap by dropping least-recently-used
+// sessions until the map is at or below the cap. Called with t.mu held.
+func (t *Tracker) evictIfNeeded() {
+	if t.maxSessions <= 0 {
+		return
+	}
+	for len(t.sessions) > t.maxSessions {
+		back := t.order.Back()
+		if back == nil {
+			return
+		}
+		victim := back.Value.(*Session)
+		t.order.Remove(back)
+		delete(t.sessions, victim.ID)
+	}
 }
 
 // LongestCommonPrefix returns the number of leading messages a and b share, by

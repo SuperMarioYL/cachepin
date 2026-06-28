@@ -41,11 +41,14 @@ type record struct {
 	IncomingLen        int     `json:"incoming_len"`
 	LCP                int     `json:"lcp"`
 	// Layout fields are the m4 context-layout linter output: the exact byte
-	// offset and message field where the cache prefix first diverged. They are
-	// omitted on a clean append (LayoutDiverged false).
+	// offset and message field where the cache prefix first diverged. The
+	// coordinate fields are always emitted (a clean turn carries the -1
+	// sentinel) so a divergence at offset 0 / msg[0] keeps its coordinates
+	// instead of being dropped by omitempty; only layout_field is omitted when
+	// there is no divergence.
 	LayoutDiverged   bool   `json:"layout_diverged"`
-	LayoutByteOffset int    `json:"layout_byte_offset,omitempty"`
-	LayoutMsgIndex   int    `json:"layout_msg_index,omitempty"`
+	LayoutByteOffset int    `json:"layout_byte_offset"`
+	LayoutMsgIndex   int    `json:"layout_msg_index"`
 	LayoutField      string `json:"layout_field,omitempty"`
 }
 

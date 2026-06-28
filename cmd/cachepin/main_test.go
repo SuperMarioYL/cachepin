@@ -3,10 +3,12 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -128,4 +130,99 @@ func extractContents(t *testing.T, body string) []string {
 		out[i] = m.Content
 	}
 	return out
+}
+
+// TestBuildProxyConcurrentMultiSessionNoRace covers fix-concurrent-canonical-map-crash:
+// the interceptor runs in httputil.ReverseProxy's per-request goroutine, so
+// concurrent requests for different sessions used to race the unguarded
+// canonical map and crash the process with a Go runtime "concurrent map read
+// and map write" fatal. The v0.3.0 fold moved that store into the mutex-guarded
+// tracker. Run under `go test -race` to confirm no data race / crash remains.
+func TestBuildProxyConcurrentMultiSessionNoRace(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := Config{Upstream: upstream.URL, Listen: ":0"}
+	p, err := buildProxy(cfg, io.Discard, nil)
+	if err != nil {
+		t.Fatalf("buildProxy: %v", err)
+	}
+	front := httptest.NewServer(p)
+	defer front.Close()
+
+	// Distinct first-user message per goroutine -> distinct session id, so the
+	// interceptor exercises the shared session store from many goroutines at once.
+	const n = 32
+	var wg sync.WaitGroup
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			body := fmt.Sprintf(
+				`{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"session %d"}]}`,
+				i)
+			resp, err := http.Post(front.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+			if err != nil {
+				errs <- err
+				return
+			}
+			resp.Body.Close()
+			if resp.StatusCode != http.StatusOK {
+				errs <- fmt.Errorf("request %d status %d", i, resp.StatusCode)
+			}
+		}(i)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Errorf("concurrent request failed: %v", err)
+	}
+}
+
+// TestBuildProxyPinModeMetricsMatchBenchmark covers fix-pin-mode-metrics-observe-mutated:
+// under --pin a mutated-but-reconcilable turn must report ~0 reprocessing, matching
+// bench/benchmark.go (which feeds the reconciled array to the pinned tracker). Before
+// the fix the proxy observed the raw mutated request and overstated reprocessing every
+// turn, contradicting the benchmark and making pin look broken when it was working.
+func TestBuildProxyPinModeMetricsMatchBenchmark(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	var human bytes.Buffer
+	cfg := Config{Upstream: upstream.URL, Listen: ":0", Pin: true}
+	p, err := buildProxy(cfg, &human, nil)
+	if err != nil {
+		t.Fatalf("buildProxy: %v", err)
+	}
+	front := httptest.NewServer(p)
+	defer front.Close()
+
+	// Turn 1 establishes canonical: system, user, assistant.
+	first := `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"u1"},{"role":"assistant","content":"a1"}]}`
+	// Turn 2 mutates the assistant message (a1 -> a1X) and appends a new user
+	// message. Pin reconciles it to canonical + new tail; the tracker must observe
+	// the reconciled array so the per-turn metrics report ~0 reprocessing.
+	second := `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"u1"},{"role":"assistant","content":"a1X"},{"role":"user","content":"u2"}]}`
+
+	post(t, front.URL, first)
+	post(t, front.URL, second)
+
+	lines := strings.Split(strings.TrimSpace(human.String()), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("expected >=2 metric lines, got %d: %q", len(lines), human.String())
+	}
+	secondLine := lines[1]
+	if strings.Contains(secondLine, "MUTATION") {
+		t.Errorf("pin-mode turn 2 reported a mutation (should be reconciled clean): %q", secondLine)
+	}
+	if !strings.Contains(secondLine, "0 tokens reprocessed") {
+		t.Errorf("pin-mode turn 2 should report ~0 reprocessed tokens, got: %q", secondLine)
+	}
 }

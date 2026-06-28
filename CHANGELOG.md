@@ -4,6 +4,60 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-06-28
+
+This release ships a batch of repo-verified correctness fixes and finishes
+consolidating the byte-level linter niche, rather than widening scope. The proxy
+is now safe to leave running under real multi-session load, its `--pin` metrics
+finally agree with the benchmark, and long uptime no longer leaks memory.
+
+### Fixed
+
+- **Concurrent multi-session traffic no longer crashes the process.** The
+  per-session `canonical` map in `main` was a plain map with no mutex, but the
+  interceptor runs in `httputil.ReverseProxy`'s per-request goroutine — so two
+  overlapping requests for different sessions triggered a Go runtime "concurrent
+  map read and map write" fatal that `net/http`'s per-request `recover` does not
+  catch. The reconciled-canonical store is now folded into the (already
+  mutex-guarded) session tracker, so the per-request critical section touches one
+  lock and the parallel map is gone entirely.
+- **`--pin` metrics now match the benchmark.** The interceptor called
+  `tracker.Observe` on the raw, mutated request *before* `pin.Reconcile` ran, so
+  under `--pin` the per-turn `reprocessed_tokens` / `MUTATION at msg[N]` were
+  computed against two consecutive mutated requests and persistently overstated
+  reprocessing — a user dashboarding `--ndjson` under `--pin` would conclude pin
+  was broken when it was in fact working, directly contradicting `bench/` which
+  feeds the reconciled array to the pinned tracker. The interceptor now
+  reconciles first and observes the reconciled array under `--pin` (updating the
+  canonical store from that same array), so a mutated-but-reconcilable turn
+  reports ~0 reprocessing, matching the benchmark.
+- **Stale sessions are evicted, so memory stays bounded.** Both the tracker's
+  `sessions` map and `main`'s canonical map were keyed by session id and only
+  ever inserted into — never pruned — so a long-lived proxy serving many distinct
+  sessions accumulated entries forever, each pinning the full canonical history.
+  The tracker now applies an LRU cap (`--max-sessions`, default 1024); past the
+  cap the least-recently-used session is dropped. Folding the canonical store
+  into the tracker gives eviction a single owner.
+
+### Changed
+
+- **Context-layout linter coordinates are always emitted.** `layout_byte_offset`
+  and `layout_msg_index` dropped their `omitempty` tags, and the no-divergence
+  case now resolves to a single `-1` sentinel everywhere. Previously a divergence
+  at offset 0 / `msg[0]` lost its coordinates (0 read as empty under `omitempty`)
+  and the first turn omitted `layout_msg_index` while a clean turn 2+ emitted
+  `-1`, so every turn now carries the same NDJSON field set with offset 0
+  preserved when it is the real coordinate. This finishes folding the byte-level
+  prefix fingerprint+diff into cachepin as the portfolio's single canonical
+  linter home.
+
+### Added
+
+- **`--max-sessions` flag** caps the number of conversations tracked at once
+  (LRU eviction past it); `0` disables the cap for short-lived processes.
+
+[0.3.0]: https://github.com/SuperMarioYL/cachepin/releases/tag/v0.3.0
+
 ## [0.2.0] - 2026-06-22
 
 This release makes the proxy actually run end-to-end from the CLI and sharpens

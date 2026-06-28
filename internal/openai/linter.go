@@ -35,6 +35,15 @@ type LayoutDiff struct {
 	Detail string
 }
 
+// NoDivergence is the sentinel returned by LintLayout when two message arrays
+// share a fully intact cache prefix — no byte-level divergence. ByteOffset and
+// MessageIndex are -1 (not 0) so a clean turn's NDJSON carries the same field
+// set as a divergent one: a zero value would be dropped by omitempty, which is
+// exactly the bug that made a divergence at offset 0 / msg[0] lose its
+// coordinates and made the first turn omit layout_msg_index. The first turn
+// (no prior canonical) and any clean append both resolve to this sentinel.
+var NoDivergence = LayoutDiff{ByteOffset: -1, MessageIndex: -1}
+
 // LintLayout compares the byte-level wire form of two message arrays and reports
 // the first point at which their cache prefix diverges. canonical is the prior
 // ground truth; incoming is the request the harness just sent. The comparison is
@@ -81,7 +90,7 @@ func LintLayout(canonical, incoming []Message) LayoutDiff {
 		}
 	}
 
-	return LayoutDiff{Diverged: false, MessageIndex: -1}
+	return NoDivergence
 }
 
 // wireBytes is the canonical serialized form of a single message — what the

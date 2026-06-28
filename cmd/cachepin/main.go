@@ -37,6 +37,10 @@ type Config struct {
 	// NDJSON, when set, writes one machine-readable metrics object per turn to
 	// this file path (in addition to the human-readable stdout line).
 	NDJSON string
+	// MaxSessions bounds the number of conversations tracked at once; past it
+	// the least-recently-used session is evicted so memory stays bounded under
+	// long uptime. 0 means unbounded.
+	MaxSessions int
 }
 
 func main() {
@@ -59,6 +63,7 @@ func parseFlags(args []string) (Config, error) {
 	fs.StringVar(&cfg.Listen, "listen", ":8089", "address to listen on")
 	fs.BoolVar(&cfg.Pin, "pin", false, "reconcile mutated requests to append-only form to preserve the upstream KV cache")
 	fs.StringVar(&cfg.NDJSON, "ndjson", "", "optional path to write per-turn metrics as NDJSON")
+	fs.IntVar(&cfg.MaxSessions, "max-sessions", session.DefaultMaxSessions, "cap on tracked sessions; the least-recently-used session is evicted past it (0 = unbounded)")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -88,7 +93,7 @@ func run(cfg Config) error {
 		return err
 	}
 
-	fmt.Printf("cachepin listening on %s -> upstream %s (pin=%v)\n", cfg.Listen, cfg.Upstream, cfg.Pin)
+	fmt.Printf("cachepin listening on %s -> upstream %s (pin=%v, max-sessions=%d)\n", cfg.Listen, cfg.Upstream, cfg.Pin, cfg.MaxSessions)
 	return http.ListenAndServe(cfg.Listen, p)
 }
 
@@ -103,15 +108,14 @@ func buildProxy(cfg Config, human, nd io.Writer) (*proxy.Proxy, error) {
 		return nil, err
 	}
 
-	tracker := session.NewTracker()
+	tracker := session.NewTrackerWithMax(cfg.MaxSessions)
 	reporter := metrics.NewReporter(human, nd)
 
-	// canonical mirrors the tracker's per-session ground truth for pin mode.
-	// The tracker already keeps canonical history internally for metrics; pin
-	// mode needs the pre-mutation canonical of the relevant session to rewrite
-	// the outgoing body, so we keep a parallel map keyed by session id.
-	canonical := make(map[string][]openai.Message)
-
+	// The reconciled-canonical store lives inside the tracker (v0.3.0 fold): the
+	// tracker already keeps canonical history per session, so pin mode reads its
+	// pre-mutation ground truth from there instead of maintaining a parallel —
+	// and previously unguarded — map in main. Eviction therefore has one owner,
+	// and the per-request critical section touches only the tracker's mutex.
 	p.Intercept = func(path string, body []byte) ([]byte, error) {
 		req, err := openai.ParseChatRequest(body)
 		if err != nil {
@@ -121,16 +125,21 @@ func buildProxy(cfg Config, human, nd io.Writer) (*proxy.Proxy, error) {
 		}
 
 		sid := session.SessionID(req.Messages)
-		prior := canonical[sid]
+		prior := tracker.Canonical(sid)
 
-		turn := tracker.Observe(req.Messages)
-		if err := reporter.Report(turn); err != nil {
-			fmt.Fprintln(os.Stderr, "cachepin: report:", err)
-		}
-
+		// What we actually forward upstream (and thus what the upstream caches
+		// against). In --pin mode the reconciled array is what's sent upstream,
+		// so observe THAT — matching bench/benchmark.go, which feeds the
+		// reconciled array to the pinned tracker — so per-turn metrics reflect
+		// upstream reality rather than the raw mutated request (v0.3.0 fix).
+		// Observing the raw mutated request instead made --pin metrics overstate
+		// reprocessing every turn and contradict the benchmark. In non-pin mode
+		// the raw request is forwarded verbatim, so observe it as-is.
+		observed := req.Messages
 		out := body
 		if cfg.Pin {
 			reconciled, changed := pin.Reconcile(prior, req.Messages)
+			observed = reconciled
 			if changed {
 				req.SetMessages(reconciled)
 				b, err := req.Marshal()
@@ -139,18 +148,15 @@ func buildProxy(cfg Config, human, nd io.Writer) (*proxy.Proxy, error) {
 				}
 				out = b
 			}
-			canonical[sid] = cloneMessages(reconciled)
-		} else {
-			canonical[sid] = cloneMessages(req.Messages)
 		}
+
+		turn := tracker.Observe(observed)
+		if err := reporter.Report(turn); err != nil {
+			fmt.Fprintln(os.Stderr, "cachepin: report:", err)
+		}
+
 		return out, nil
 	}
 
 	return p, nil
-}
-
-func cloneMessages(msgs []openai.Message) []openai.Message {
-	out := make([]openai.Message, len(msgs))
-	copy(out, msgs)
-	return out
 }

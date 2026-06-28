@@ -2,6 +2,7 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 
 	"github.com/SuperMarioYL/cachepin/internal/openai"
@@ -155,5 +156,102 @@ func TestEstimateTokensGrowsWithContent(t *testing.T) {
 	}
 	if EstimateTokens(nil) != 0 {
 		t.Errorf("estimate of empty = %d, want 0", EstimateTokens(nil))
+	}
+}
+
+// sessionN builds a 2-message seed whose first-user message varies, so each
+// call yields a distinct session id. It returns the messages and their id.
+func sessionN(i int) ([]openai.Message, string) {
+	msgs := []openai.Message{
+		msg("system", "you are a coding agent"),
+		msg("user", fmt.Sprintf("unrelated conversation %d", i)),
+	}
+	return msgs, SessionID(msgs)
+}
+
+// TestTrackerEvictsOldestAtCap covers fix-unbounded-session-map-growth: past the
+// max-sessions cap the least-recently-used sessions are evicted, so the map
+// stays bounded instead of leaking one entry per conversation forever.
+func TestTrackerEvictsOldestAtCap(t *testing.T) {
+	tr := NewTrackerWithMax(3)
+	var ids []string
+	for i := 0; i < 5; i++ {
+		msgs, id := sessionN(i)
+		ids = append(ids, id)
+		tr.Observe(msgs)
+	}
+
+	if got := tr.Len(); got != 3 {
+		t.Errorf("after 5 observes under cap 3, Len = %d, want 3", got)
+	}
+
+	// Insertion order is also LRU order when nothing is re-touched, so the two
+	// oldest (first inserted) are evicted and the three most recent survive.
+	for i, id := range ids {
+		got := tr.Canonical(id)
+		switch {
+		case i < 2:
+			if got != nil {
+				t.Errorf("session %d (oldest) should have been evicted, Canonical returned %d msgs", i, len(got))
+			}
+		default:
+			if got == nil {
+				t.Errorf("session %d (recent) should have survived, Canonical returned nil", i)
+			}
+		}
+	}
+}
+
+// TestTrackerLRUTouchKeepsRecentUse verifies eviction is true LRU — re-observing
+// an old session marks it recently used, so a later overflow evicts the
+// genuinely-idle session, not the one that was just touched.
+func TestTrackerLRUTouchKeepsRecentUse(t *testing.T) {
+	tr := NewTrackerWithMax(3)
+
+	m0, id0 := sessionN(0)
+	m1, id1 := sessionN(1)
+	m2, id2 := sessionN(2)
+	tr.Observe(m0)
+	tr.Observe(m1)
+	tr.Observe(m2)
+
+	// Touch session 0 — it becomes most-recently-used; session 1 is now oldest.
+	tr.Observe(m0)
+
+	m3, id3 := sessionN(3)
+	tr.Observe(m3) // overflow by one -> evict the LRU victim (id1)
+
+	if tr.Len() != 3 {
+		t.Fatalf("Len = %d, want 3 (capped)", tr.Len())
+	}
+	if tr.Canonical(id1) != nil {
+		t.Error("session 1 should have been evicted as the LRU victim, but survived")
+	}
+	for _, id := range []string{id0, id2, id3} {
+		if tr.Canonical(id) == nil {
+			t.Errorf("session should have survived but was evicted: %s", id)
+		}
+	}
+}
+
+// TestTrackerUnboundedWhenCapDisabled confirms a non-positive cap means no
+// eviction (the opt-out path used by tests and short-lived processes).
+func TestTrackerUnboundedWhenCapDisabled(t *testing.T) {
+	tr := NewTrackerWithMax(0)
+	for i := 0; i < DefaultMaxSessions+5; i++ {
+		m, _ := sessionN(i)
+		tr.Observe(m)
+	}
+	if got := tr.Len(); got != DefaultMaxSessions+5 {
+		t.Errorf("unbounded tracker Len = %d, want %d (no eviction)", got, DefaultMaxSessions+5)
+	}
+}
+
+// TestTrackerDefaultCapMatchesConstant confirms NewTracker wires the documented
+// default, so the shipped proxy bounds memory out of the box.
+func TestTrackerDefaultCapMatchesConstant(t *testing.T) {
+	tr := NewTracker()
+	if tr.maxSessions != DefaultMaxSessions {
+		t.Errorf("NewTracker maxSessions = %d, want %d", tr.maxSessions, DefaultMaxSessions)
 	}
 }

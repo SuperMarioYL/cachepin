@@ -100,8 +100,54 @@ func TestLintLayoutByteOffsetIsExact(t *testing.T) {
 	if !d.Diverged {
 		t.Fatal("Diverged = false, want true")
 	}
+	if d.MessageIndex != 0 {
+		t.Errorf("MessageIndex = %d, want 0 (divergence in the first message)", d.MessageIndex)
+	}
 	want := commonBytePrefix(wireBytes(canonical[0]), wireBytes(incoming[0]))
 	if d.ByteOffset != want {
 		t.Errorf("ByteOffset = %d, want %d (exact common-prefix byte)", d.ByteOffset, want)
+	}
+}
+
+// TestLintLayoutNoDivergenceSentinel covers m4: a clean append must return the
+// NoDivergence sentinel with coordinates at -1 (not 0), so the NDJSON field set
+// is stable across turns and a divergence at offset 0 / msg[0] is not
+// indistinguishable from "no divergence".
+func TestLintLayoutNoDivergenceSentinel(t *testing.T) {
+	canonical := []Message{m("system", "s"), m("user", "u1")}
+	incoming := []Message{m("system", "s"), m("user", "u1"), m("assistant", "a1")}
+
+	d := LintLayout(canonical, incoming)
+	if d.Diverged {
+		t.Error("Diverged = true, want false for a clean append")
+	}
+	if d != NoDivergence {
+		t.Errorf("clean append = %+v, want NoDivergence sentinel %+v", d, NoDivergence)
+	}
+
+	// The first turn has no prior canonical; LintLayout must resolve it to the
+	// same sentinel (the v0.2.0 path left a zero-value LayoutDiff instead).
+	firstTurn := LintLayout(nil, incoming)
+	if firstTurn != NoDivergence {
+		t.Errorf("empty-canonical LintLayout = %+v, want NoDivergence", firstTurn)
+	}
+}
+
+// TestLintLayoutDivergenceAtFirstByte preserves offset 0: when the only message
+// is dropped, the message-count divergence lands at byte 0 / msg[0], and those
+// coordinates must survive (not collapse to the no-divergence sentinel).
+func TestLintLayoutDivergenceAtFirstByte(t *testing.T) {
+	canonical := []Message{m("system", "s")}
+	incoming := []Message{} // the only message dropped
+
+	d := LintLayout(canonical, incoming)
+	if !d.Diverged {
+		t.Fatal("Diverged = false, want true for a dropped message")
+	}
+	if d.Field != "message-count" {
+		t.Errorf("Field = %q, want message-count", d.Field)
+	}
+	if d.ByteOffset != 0 || d.MessageIndex != 0 {
+		t.Errorf("dropped-only-message coords = (%d,%d), want (0,0) preserved", d.ByteOffset, d.MessageIndex)
 	}
 }
