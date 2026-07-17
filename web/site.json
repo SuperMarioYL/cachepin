@@ -1,0 +1,84 @@
+{
+  "schema": 1,
+  "name": "cachepin",
+  "github": "https://github.com/SuperMarioYL/cachepin",
+  "host": "cachepin.lei6393.com",
+  "lang": { "primary": "zh", "toggle": true },
+  "accent": ["#E11D48"],
+  "hero": {
+    "eyebrow": {
+      "zh": "钉住的前缀不再被悄悄赶走 · 日志重启不丢 · 空闲会话自动过期 · 长跑也不涨内存",
+      "en": "Pinned prefixes survive eviction · Logs survive restarts · Idle sessions expire · Long uptime stays bounded"
+    },
+    "headline": {
+      "zh": "你以为钉住的前缀还在缓存里\n其实早被悄悄赶走又重新计费了——现在它会告诉你，并守住该守住的那一份",
+      "en": "The prefixes you pinned were silently evicted and re-billed\n— now it tells you, and holds the line on what should stay cached"
+    },
+    "sub": {
+      "zh": "一个单二进制，架在你的编码 Agent 和自托管模型服务之间。开启 --pin 后，当某个会话因内存压力被清出去又回来时，它会显式告警（pin_coverage_lost）而不是继续显示一切正常；--ndjson 日志改成追加写入，重启不丢、并发不乱序；再加一个 --idle-ttl，让空闲会话自动过期——长跑部署的内存不再无界增长。",
+      "en": "A single binary you drop between your coding agent and your self-hosted model server. With --pin on, when a session gets evicted under memory pressure and later returns, it emits an explicit WARN (pin_coverage_lost) instead of reporting all-green; the --ndjson log is opened in append mode so it survives restarts and stays ordered under concurrent writes; and a new --idle-ttl expires idle sessions on their own — long-uptime deployments keep memory bounded."
+    },
+    "command": "cachepin --upstream http://localhost:8080 --pin --idle-ttl 1h",
+    "cta": { "zh": "开始使用", "en": "Get started" },
+    "ctaGithub": { "zh": "在 GitHub 查看", "en": "View on GitHub" }
+  },
+  "advantages": [
+    {
+      "title": { "zh": "钉住的前缀被赶走，不再静默失效", "en": "Pinned coverage no longer dies in silence" },
+      "body": {
+        "zh": "当内存压力大、某个会话被清出去又回来时，旧版 --pin 只能拿到空的历史，于是放行原样请求、重新计费，而指标面板还显示 100% 保留、0 重处理——你最关心的那条「钉住」保证，恰恰在最该生效时被悄悄绕过。现在工具会记下被清走的会话，下一轮显式打一条告警，并在机器可读日志里标 pin_coverage_lost:true——你一眼就知道该把容量调大。",
+        "en": "When memory pressure evicts a session and it later returns, the old --pin got an empty history and short-circuited — the request went through raw and got re-billed while the dashboard still read 100% preserved, 0 reprocessed. The very guarantee you turned --pin on for was silently bypassed at the moment it mattered most. Now the tool records evicted sessions, emits an explicit WARN on the next turn, and flags pin_coverage_lost:true in the machine-readable log — so you see immediately that it's time to raise the capacity."
+      },
+      "chips": [
+        "› 记下被清走的会话",
+        "› WARN + pin_coverage_lost:true",
+        "› 不再静默绿灯"
+      ]
+    },
+    {
+      "title": { "zh": "重启不丢日志，并发也不乱序", "en": "Logs survive restarts — and stay ordered under load" },
+      "body": {
+        "zh": "旧版 --ndjson 每次重启都把先前攒下的面板日志清空；多会话并发时，每条请求抢同一文件位置，内核按拿锁顺序写，可能把第 N+1 轮写到第 N 轮前面——正好砸中你想要多会话隔离的场景。现在日志改成追加写入，重启后先前的轮次还在；并发写入被同一把锁护住，整行落地、按调用顺序排好。",
+        "en": "The old --ndjson wiped the dashboard log you'd asked it to accumulate on every restart; under concurrent multi-session traffic each request raced for the same file offset and the kernel wrote them in lock-grab order — turn N+1 could land ahead of turn N, right in the scenario the multi-session cap is meant for. Now the log is opened in append mode, so prior turns survive a restart; concurrent writes are guarded by one lock and land as whole, in-call-order lines."
+      },
+      "chips": [
+        "› 追加写入，重启累积",
+        "› 一把锁护住整行",
+        "› 多会话不交错"
+      ]
+    },
+    {
+      "title": { "zh": "长跑部署，内存不再无界增长", "en": "Long uptime, bounded memory — even with no new traffic" },
+      "body": {
+        "zh": "会话数上限只在「新会话到来」时才清掉最旧的——一个长期在线、只服务几个偶尔空闲会话的代理，会把它们全钉在内存里永远不清。新增的 --idle-ttl（如 10m、1h）在下一次观察时顺手清掉超时者，不另起后台进程。稀疏、长在线、共享部署的内存就此有界，即便一整晚没有新流量。",
+        "en": "The session-count cap only clears the oldest when a *new* session arrives — a long-lived proxy serving a few sessions that each go idle kept all of them pinned in memory forever. The new --idle-ttl (e.g. 10m, 1h) expires idle ones on the next observation, with no background process. Sparse, long-uptime, shared deployments keep memory bounded — even through a night of zero new traffic."
+      },
+      "chips": [
+        "› --idle-ttl 10m / 1h",
+        "› 下次观察时清掉",
+        "› 无后台进程"
+      ]
+    }
+  ],
+  "scene": {
+    "kind": "hub-nodes",
+    "nodes": ["Pin silently voided", "Log wiped on restart", "Writes reordered", "Idle memory grows"]
+  },
+  "cta": {
+    "headline": {
+      "zh": "钉住该钉住的前缀，并告诉你哪一份丢了",
+      "en": "Pin the prefixes that should stay — and tell you which ones slipped"
+    },
+    "sub": {
+      "zh": "开源、MIT、一个单二进制。架在编码 Agent 和你的模型服务之间，让 KV Cache 不再被悄悄赶走又重新计费。",
+      "en": "Open source, MIT, a single binary. Sit it between your coding agent and your model server so the KV Cache stops getting silently evicted and re-billed."
+    },
+    "button": { "zh": "在 GitHub 上开始", "en": "Get started on GitHub" }
+  },
+  "footer": {
+    "tag": {
+      "zh": "给编码 Agent 的 KV Cache 钉子",
+      "en": "The pin that keeps your coding agent's KV Cache alive"
+    }
+  }
+}
