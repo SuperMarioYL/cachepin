@@ -4,6 +4,55 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-07-17
+
+This release hardens the v0.3.0 multi-session / eviction story rather than
+widening scope. The `--ndjson` dashboard log survives restarts and concurrent
+multi-session traffic, `--pin` no longer reports silent-green metrics when its
+coverage was just voided by eviction, and a new `--idle-ttl` bounds memory for
+sparse long-uptime deployments.
+
+### Fixed
+
+- **`--ndjson` no longer truncates on restart or interleaves under concurrent
+  traffic.** The sink was opened with `os.Create` (`O_TRUNC`), so every cachepin
+  restart silently destroyed the prior benchmark/dashboard log a user asked to
+  accumulate. It was also opened without `O_APPEND`, so per-turn writes from the
+  proxy's per-request goroutines shared one file offset and the kernel served
+  them in non-deterministic lock-grab order — a concurrent multi-session
+  deployment (exactly what `--max-sessions` targets) could write turn N+1's line
+  ahead of turn N's. The sink is now opened with
+  `O_CREATE|O_WRONLY|O_APPEND`, and `metrics.Reporter` gained a `sync.Mutex`
+  guarding both the human line and the NDJSON line so concurrent turns write
+  whole, in-call-order lines. Restarting cachepin with the same `--ndjson` path
+  now keeps prior turns.
+
+- **`--pin` coverage is no longer silently voided when an LRU-evicted session
+  returns.** Under `--pin` the interceptor reads `tracker.Canonical(sid)` then
+  `pin.Reconcile(prior, …)`; when `sid` was evicted, `Canonical` returns `nil`
+  and `Reconcile(nil, …)` short-circuits to a no-op — so the raw mutated request
+  was forwarded unreconciled while `Observe` reported `turn 1` / `100% preserved`
+  / `0 reprocessed` / not mutated. The headline `--pin` guarantee
+  (`reprocessed_tokens ~0` because pin is working) was silently voided by the
+  very eviction v0.3.0 added, with no signal. The tracker now records evicted
+  session ids in a bounded set (`WasEvicted`), and the `--pin` interceptor emits
+  a `WARN: canonical evicted, --pin not applied this turn (raise --max-sessions)`
+  line — plus a `pin_coverage_lost:true` NDJSON field — when a returning
+  session's canonical was lost, so the silent-green-while-reprocessing case is
+  surfaced instead of hidden.
+
+### Added
+
+- **`--idle-ttl` flag** evicts sessions whose last observed turn is older than
+  the given duration (e.g. `--idle-ttl 10m`, `--idle-ttl 1h`). v0.3.0's
+  `--max-sessions` is a pure LRU count cap, so a session is evicted only when a
+  *new* session pushes it out — a long-lived proxy serving a handful of sessions
+  that each go idle kept all of them pinned in memory forever. `--idle-ttl`
+  reuses the existing LRU order list for lazy idle-expiry on the next `Observe`
+  (no background goroutine), so sparse long-uptime / shared deployments keep
+  memory bounded even with zero new traffic. `0` (default) disables idle expiry
+  and preserves the v0.3.0 count-cap-only behavior.
+
 ## [0.3.0] - 2026-06-28
 
 This release ships a batch of repo-verified correctness fixes and finishes
@@ -56,6 +105,7 @@ finally agree with the benchmark, and long uptime no longer leaks memory.
 - **`--max-sessions` flag** caps the number of conversations tracked at once
   (LRU eviction past it); `0` disables the cap for short-lived processes.
 
+[0.4.0]: https://github.com/SuperMarioYL/cachepin/releases/tag/v0.4.0
 [0.3.0]: https://github.com/SuperMarioYL/cachepin/releases/tag/v0.3.0
 
 ## [0.2.0] - 2026-06-22

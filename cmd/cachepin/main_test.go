@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -224,5 +225,134 @@ func TestBuildProxyPinModeMetricsMatchBenchmark(t *testing.T) {
 	}
 	if !strings.Contains(secondLine, "0 tokens reprocessed") {
 		t.Errorf("pin-mode turn 2 should report ~0 reprocessed tokens, got: %q", secondLine)
+	}
+}
+
+// TestBuildProxyNDJSONAppendsAcrossRestarts covers fix-ndjson-truncates-and-races
+// at the sink level: openNDJSON opens the --ndjson file in append mode (v0.4.0),
+// so re-opening the same path (a process restart) accumulates turns instead of
+// truncating. Before the fix os.Create (O_TRUNC) wiped the prior log on every
+// restart. The two proxies each write one turn through their own append-opened
+// sink, mirroring what run() does across a restart.
+func TestBuildProxyNDJSONAppendsAcrossRestarts(t *testing.T) {
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	f, err := os.CreateTemp("", "cachepin-ndjson-*.jsonl")
+	if err != nil {
+		t.Fatalf("CreateTemp: %v", err)
+	}
+	ndjson := f.Name()
+	f.Close()
+	defer os.Remove(ndjson)
+
+	// "Restart 1": append-open the sink, build a proxy over it, send one turn.
+	sink1, err := openNDJSON(ndjson)
+	if err != nil {
+		t.Fatalf("openNDJSON 1: %v", err)
+	}
+	cfg := Config{Upstream: upstream.URL, Listen: ":0"}
+	p1, err := buildProxy(cfg, io.Discard, sink1)
+	if err != nil {
+		t.Fatalf("buildProxy p1: %v", err)
+	}
+	front1 := httptest.NewServer(p1)
+	defer front1.Close()
+	post(t, front1.URL, `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"restart1"}]}`)
+	if err := sink1.Close(); err != nil {
+		t.Fatalf("sink1 close: %v", err)
+	}
+
+	// "Restart 2": append-open the SAME file (a fresh process restart). Under
+	// the old os.Create path this truncated the file; append keeps both turns.
+	sink2, err := openNDJSON(ndjson)
+	if err != nil {
+		t.Fatalf("openNDJSON 2: %v", err)
+	}
+	p2, err := buildProxy(cfg, io.Discard, sink2)
+	if err != nil {
+		t.Fatalf("buildProxy p2: %v", err)
+	}
+	front2 := httptest.NewServer(p2)
+	defer front2.Close()
+	post(t, front2.URL, `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"restart2"}]}`)
+	if err := sink2.Close(); err != nil {
+		t.Fatalf("sink2 close: %v", err)
+	}
+
+	data, err := os.ReadFile(ndjson)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	body := string(data)
+	// Both turns' NDJSON lines must be present (append, not truncate). The
+	// per-turn record carries a session_id (a hash of system+first-user), not
+	// the message content, so assert line count + two DISTINCT session ids.
+	lines := strings.Split(strings.TrimSpace(body), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 appended NDJSON lines across restarts, got %d: %q", len(lines), body)
+	}
+	ids := make(map[string]struct{}, 2)
+	for _, ln := range lines {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(ln), &rec); err != nil {
+			t.Fatalf("appended NDJSON line not valid JSON: %q\nerr: %v", ln, err)
+		}
+		if sid, ok := rec["session_id"].(string); ok {
+			ids[sid] = struct{}{}
+		}
+	}
+	if len(ids) != 2 {
+		t.Errorf("expected 2 distinct session_ids across restarts, got %d: %q", len(ids), body)
+	}
+}
+
+// TestBuildProxyPinWarnsOnEvictedSession covers fix-pin-coverage-voided-by-eviction:
+// under --pin with a small --max-sessions, a session evicted then returning has
+// its canonical lost (tracker.Canonical returns nil), so pin.Reconcile is a
+// no-op and the raw mutated request is forwarded. The v0.4.0 fix emits a WARN on
+// the human line so the silent-green-while-reprocessing case is surfaced, and
+// the NDJSON record carries pin_coverage_lost:true.
+func TestBuildProxyPinWarnsOnEvictedSession(t *testing.T) {
+	var bodies []string
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, string(b))
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	var human bytes.Buffer
+	cfg := Config{Upstream: upstream.URL, Listen: ":0", Pin: true, MaxSessions: 1}
+	p, err := buildProxy(cfg, &human, nil)
+	if err != nil {
+		t.Fatalf("buildProxy: %v", err)
+	}
+	front := httptest.NewServer(p)
+	defer front.Close()
+
+	// Turn 1: establish canonical for session A (system + user u1 + assistant a1).
+	post(t, front.URL, `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"u1"},{"role":"assistant","content":"a1"}]}`)
+	// Turn 2: a different session B forces LRU eviction of A (cap = 1).
+	post(t, front.URL, `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"B"}]}`)
+	// Turn 3: session A returns MUTATED (a1 -> a1X) + new u2. Canonical was
+	// evicted, so pin cannot reconcile and must forward the raw body with a WARN.
+	post(t, front.URL, `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"u1"},{"role":"assistant","content":"a1X"},{"role":"user","content":"u2"}]}`)
+
+	if len(bodies) != 3 {
+		t.Fatalf("upstream saw %d requests, want 3", len(bodies))
+	}
+	// The raw mutated body must reach the upstream (pin did NOT restore a1).
+	if !strings.Contains(bodies[2], "a1X") {
+		t.Errorf("evicted-session turn 3 should forward the raw mutated body containing a1X; got %q", bodies[2])
+	}
+	if !strings.Contains(human.String(), "WARN: canonical evicted") {
+		t.Errorf("evicted-session turn 3 should emit a pin-coverage WARN; human = %q", human.String())
+	}
+	if !strings.Contains(human.String(), "raise --max-sessions") {
+		t.Errorf("WARN should name the remediation; human = %q", human.String())
 	}
 }

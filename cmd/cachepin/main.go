@@ -16,6 +16,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/SuperMarioYL/cachepin/internal/metrics"
 	"github.com/SuperMarioYL/cachepin/internal/openai"
@@ -35,12 +36,19 @@ type Config struct {
 	// so the upstream KV Cache survives.
 	Pin bool
 	// NDJSON, when set, writes one machine-readable metrics object per turn to
-	// this file path (in addition to the human-readable stdout line).
+	// this file path (in addition to the human-readable stdout line). The file
+	// is opened in append mode, so restarting CachePin with the same path
+	// accumulates turns rather than truncating the prior log (v0.4.0).
 	NDJSON string
 	// MaxSessions bounds the number of conversations tracked at once; past it
 	// the least-recently-used session is evicted so memory stays bounded under
 	// long uptime. 0 means unbounded.
 	MaxSessions int
+	// IdleTTL, when non-zero, evicts a session whose last observed turn is older
+	// than this on the next Observe — so a sparse long-uptime deployment keeps
+	// memory bounded even when no new sessions arrive to push idle ones out
+	// under the LRU count cap (v0.4.0). 0 disables idle expiry.
+	IdleTTL time.Duration
 }
 
 func main() {
@@ -64,6 +72,7 @@ func parseFlags(args []string) (Config, error) {
 	fs.BoolVar(&cfg.Pin, "pin", false, "reconcile mutated requests to append-only form to preserve the upstream KV cache")
 	fs.StringVar(&cfg.NDJSON, "ndjson", "", "optional path to write per-turn metrics as NDJSON")
 	fs.IntVar(&cfg.MaxSessions, "max-sessions", session.DefaultMaxSessions, "cap on tracked sessions; the least-recently-used session is evicted past it (0 = unbounded)")
+	fs.DurationVar(&cfg.IdleTTL, "idle-ttl", 0, "evict sessions whose last turn is older than this (e.g. 10m, 1h); 0 disables idle expiry and keeps only the --max-sessions count cap")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
@@ -80,9 +89,9 @@ func parseFlags(args []string) (Config, error) {
 func run(cfg Config) error {
 	var nd io.Writer
 	if cfg.NDJSON != "" {
-		f, err := os.Create(cfg.NDJSON)
+		f, err := openNDJSON(cfg.NDJSON)
 		if err != nil {
-			return fmt.Errorf("open --ndjson file %q: %w", cfg.NDJSON, err)
+			return err
 		}
 		defer f.Close()
 		nd = f
@@ -93,8 +102,22 @@ func run(cfg Config) error {
 		return err
 	}
 
-	fmt.Printf("cachepin listening on %s -> upstream %s (pin=%v, max-sessions=%d)\n", cfg.Listen, cfg.Upstream, cfg.Pin, cfg.MaxSessions)
+	fmt.Printf("cachepin listening on %s -> upstream %s (pin=%v, max-sessions=%d, idle-ttl=%s)\n", cfg.Listen, cfg.Upstream, cfg.Pin, cfg.MaxSessions, cfg.IdleTTL)
 	return http.ListenAndServe(cfg.Listen, p)
+}
+
+// openNDJSON opens the --ndjson sink in append mode (v0.4.0). os.Create would
+// truncate the prior log on every restart, and a non-append open let concurrent
+// per-request writes share one file offset and land out of order. O_APPEND
+// makes each write atomic-at-end-of-file so restarts accumulate and concurrent
+// turns append in call order. It is extracted so the append-mode contract is
+// unit-testable without binding a real listener.
+func openNDJSON(path string) (io.WriteCloser, error) {
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return nil, fmt.Errorf("open --ndjson file %q: %w", path, err)
+	}
+	return f, nil
 }
 
 // buildProxy constructs the proxy and installs the interceptor that observes the
@@ -108,7 +131,7 @@ func buildProxy(cfg Config, human, nd io.Writer) (*proxy.Proxy, error) {
 		return nil, err
 	}
 
-	tracker := session.NewTrackerWithMax(cfg.MaxSessions)
+	tracker := session.NewTrackerWithMaxTTL(cfg.MaxSessions, cfg.IdleTTL)
 	reporter := metrics.NewReporter(human, nd)
 
 	// The reconciled-canonical store lives inside the tracker (v0.3.0 fold): the
@@ -126,6 +149,12 @@ func buildProxy(cfg Config, human, nd io.Writer) (*proxy.Proxy, error) {
 
 		sid := session.SessionID(req.Messages)
 		prior := tracker.Canonical(sid)
+		// pinCoverageLost is true only under --pin when the session's canonical
+		// was lost to eviction since the last turn — pin.Reconcile(nil, …) is a
+		// no-op in that case, so the raw mutated request is forwarded while
+		// Observe would otherwise report green 0-reprocessed metrics. The flag
+		// surfaces it in both the human line and NDJSON (v0.4.0).
+		pinCoverageLost := false
 
 		// What we actually forward upstream (and thus what the upstream caches
 		// against). In --pin mode the reconciled array is what's sent upstream,
@@ -138,6 +167,9 @@ func buildProxy(cfg Config, human, nd io.Writer) (*proxy.Proxy, error) {
 		observed := req.Messages
 		out := body
 		if cfg.Pin {
+			if prior == nil && tracker.WasEvicted(sid) {
+				pinCoverageLost = true
+			}
 			reconciled, changed := pin.Reconcile(prior, req.Messages)
 			observed = reconciled
 			if changed {
@@ -151,6 +183,7 @@ func buildProxy(cfg Config, human, nd io.Writer) (*proxy.Proxy, error) {
 		}
 
 		turn := tracker.Observe(observed)
+		turn.PinCoverageLost = pinCoverageLost
 		if err := reporter.Report(turn); err != nil {
 			fmt.Fprintln(os.Stderr, "cachepin: report:", err)
 		}

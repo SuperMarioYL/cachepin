@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/SuperMarioYL/cachepin/internal/openai"
 )
@@ -253,5 +254,80 @@ func TestTrackerDefaultCapMatchesConstant(t *testing.T) {
 	tr := NewTracker()
 	if tr.maxSessions != DefaultMaxSessions {
 		t.Errorf("NewTracker maxSessions = %d, want %d", tr.maxSessions, DefaultMaxSessions)
+	}
+}
+
+// TestTrackerIdleTTLEvictsQuietSession covers m5-idle-ttl-eviction: under an
+// idle TTL, a session that has gone quiet is evicted on the next Observe even
+// though no new session arrives to push it out under the LRU count cap. Without
+// TTL, an unbounded-count tracker would keep the idle session pinned forever.
+func TestTrackerIdleTTLEvictsQuietSession(t *testing.T) {
+	clock := time.Unix(1_750_000_000, 0).UTC()
+	tr := NewTrackerWithMaxTTL(0, 5*time.Minute) // unbounded count, 5m idle TTL
+	tr.now = func() time.Time { return clock }
+
+	m0, id0 := sessionN(0)
+	tr.Observe(m0) // observed at clock=t0
+	if tr.Canonical(id0) == nil {
+		t.Fatal("session 0 should be live right after Observe")
+	}
+
+	// Advance the clock past the TTL and observe a DIFFERENT session. The idle
+	// expiry runs on the next evictIfNeeded (triggered by the new Observe) and
+	// should drop session 0 even though the count cap is unbounded.
+	clock = clock.Add(10 * time.Minute)
+	m1, _ := sessionN(1)
+	tr.Observe(m1)
+
+	if tr.Canonical(id0) != nil {
+		t.Errorf("idle session 0 should have been evicted after TTL; Canonical still non-nil")
+	}
+	if !tr.WasEvicted(id0) {
+		t.Errorf("idle-evicted session 0 should be recorded as evicted (for the --pin warning)")
+	}
+}
+
+// TestTrackerIdleTTLSparedFreshSession confirms the idle path does not evict a
+// session whose lastSeen is within the TTL — the back-of-list check stops at
+// the first fresh session.
+func TestTrackerIdleTTLSparedFreshSession(t *testing.T) {
+	clock := time.Unix(1_750_000_000, 0).UTC()
+	tr := NewTrackerWithMaxTTL(0, 5*time.Minute)
+	tr.now = func() time.Time { return clock }
+
+	m0, id0 := sessionN(0)
+	tr.Observe(m0)
+	clock = clock.Add(1 * time.Minute) // within TTL
+	m1, _ := sessionN(1)
+	tr.Observe(m1)
+
+	if tr.Canonical(id0) == nil {
+		t.Errorf("fresh session 0 (within TTL) should NOT have been evicted")
+	}
+}
+
+// TestTrackerWasEvictedClearsOnReObserve covers the --pin warning contract: a
+// session flagged evicted stops being "evicted" once it is observed again, so a
+// future eviction re-arms the warning instead of a stale flag persisting.
+func TestTrackerWasEvictedClearsOnReObserve(t *testing.T) {
+	tr := NewTrackerWithMax(2)
+	m0, id0 := sessionN(0)
+	m1, _ := sessionN(1)
+	m2, _ := sessionN(2)
+	tr.Observe(m0)
+	tr.Observe(m1)
+	tr.Observe(m2) // overflow cap 2 -> evict id0
+
+	if tr.Canonical(id0) != nil {
+		t.Fatal("session 0 should have been evicted at the cap")
+	}
+	if !tr.WasEvicted(id0) {
+		t.Fatal("session 0 should be flagged evicted after eviction")
+	}
+
+	// Re-observe session 0: it is live again, so the stale evicted flag clears.
+	tr.Observe(m0)
+	if tr.WasEvicted(id0) {
+		t.Errorf("session 0 re-observed; WasEvicted should be false (flag cleared)")
 	}
 }

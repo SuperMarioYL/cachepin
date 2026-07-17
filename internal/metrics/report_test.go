@@ -3,7 +3,9 @@ package metrics
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -156,5 +158,70 @@ func TestNDJSONNoDivergenceConsistentShape(t *testing.T) {
 		if _, ok := k2[k]; !ok {
 			t.Errorf("first-turn has field %q but clean-turn does not\nfirst=%s\nclean=%s", k, j1, j2)
 		}
+	}
+}
+
+// TestReporterConcurrentWholeLines covers fix-ndjson-truncates-and-races at the
+// serialization layer: concurrent per-request goroutines call Report on a shared
+// Reporter. Without the v0.4.0 mutex, each Fprintln is one syscall (so lines are
+// whole, not mid-line-corrupted) but the kernel serves concurrent writes in
+// non-deterministic lock-grab order — here we assert the stronger invariant the
+// mutex restores: every emitted line parses as standalone valid JSON (no two
+// turns' bytes interleave) and the line count equals the turn count.
+func TestReporterConcurrentWholeLines(t *testing.T) {
+	var buf bytes.Buffer
+	r := NewReporter(nil, &buf)
+	r.now = func() time.Time { return time.Unix(1750000000, 0).UTC() }
+
+	const n = 256
+	var wg sync.WaitGroup
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			turn := session.Turn{
+				SessionID: fmt.Sprintf("s%d", i),
+				TurnNum:   i + 1,
+			}
+			if err := r.Report(turn); err != nil {
+				t.Errorf("Report(%d): %v", i, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	out := strings.TrimSpace(buf.String())
+	if out == "" {
+		t.Fatal("no NDJSON emitted")
+	}
+	lines := strings.Split(out, "\n")
+	if len(lines) != n {
+		t.Fatalf("got %d lines, want %d (interleaving or lost writes)", len(lines), n)
+	}
+	for idx, line := range lines {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("line %d not standalone-valid JSON (concurrent writes interleaved): %q\nerr: %v", idx, line, err)
+		}
+	}
+}
+
+// TestNDJSONPinCoverageLostField covers the v0.4.0 pin-coverage surface: a turn
+// whose canonical was lost to eviction carries pin_coverage_lost:true, and a
+// normal turn omits the field (omitempty) so clean NDJSON stays compact.
+func TestNDJSONPinCoverageLostField(t *testing.T) {
+	turn := session.Turn{TurnNum: 1}
+	_, rec := ndjsonFor(t, turn)
+	if _, ok := rec["pin_coverage_lost"]; ok {
+		t.Error("pin_coverage_lost should be omitted (omitempty) on a normal turn")
+	}
+
+	turn.PinCoverageLost = true
+	line, rec := ndjsonFor(t, turn)
+	if v, ok := rec["pin_coverage_lost"]; !ok || v != true {
+		t.Errorf("pin_coverage_lost = %v ok=%v, want true; line=%s", v, ok, line)
+	}
+	if !strings.Contains(HumanLine(turn), "WARN: canonical evicted") {
+		t.Errorf("human line missing the eviction warning: %q", HumanLine(turn))
 	}
 }

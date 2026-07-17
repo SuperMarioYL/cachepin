@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/SuperMarioYL/cachepin/internal/session"
@@ -15,10 +16,18 @@ import (
 
 // Reporter writes per-turn metrics. The human writer receives the terminal
 // line; the optional nd writer receives NDJSON. Either may be nil.
+//
+// A sync.Mutex serializes writes to both sinks (v0.4.0) because the proxy's
+// per-request goroutines call Report concurrently under multi-session traffic;
+// without it each Fprintln is one syscall (whole lines, no mid-line corruption)
+// but the kernel serves concurrent writes in non-deterministic lock-grab order,
+// so turn N+1's line could land ahead of turn N's in the NDJSON file — a
+// misleading sequence for a benchmark/dashboard consumer.
 type Reporter struct {
 	human io.Writer
 	nd    io.Writer
 	now   func() time.Time
+	mu    sync.Mutex
 }
 
 // NewReporter builds a Reporter. Pass nil for nd to skip NDJSON output, or nil
@@ -50,10 +59,20 @@ type record struct {
 	LayoutByteOffset int    `json:"layout_byte_offset"`
 	LayoutMsgIndex   int    `json:"layout_msg_index"`
 	LayoutField      string `json:"layout_field,omitempty"`
+	// PinCoverageLost is true on a --pin turn whose canonical was lost to LRU/idle
+	// eviction, so the request was forwarded unreconciled despite --pin (v0.4.0).
+	// It surfaces in NDJSON what the human line also warns, so a dashboard can
+	// detect the silent-green-while-reprocessing case.
+	PinCoverageLost bool `json:"pin_coverage_lost,omitempty"`
 }
 
-// Report writes the turn to both configured sinks.
+// Report writes the turn to both configured sinks. Concurrent calls are safe:
+// the mutex serializes them so lines land in call order, and the NDJSON file is
+// expected to be opened in append mode (see cmd/cachepin/main.go) so restarts
+// accumulate rather than truncate.
 func (r *Reporter) Report(t session.Turn) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.human != nil {
 		if _, err := fmt.Fprintln(r.human, HumanLine(t)); err != nil {
 			return fmt.Errorf("metrics: write human line: %w", err)
@@ -76,6 +95,7 @@ func (r *Reporter) Report(t session.Turn) error {
 			LayoutByteOffset:   t.Layout.ByteOffset,
 			LayoutMsgIndex:     t.Layout.MessageIndex,
 			LayoutField:        t.Layout.Field,
+			PinCoverageLost:    t.PinCoverageLost,
 		}
 		b, err := json.Marshal(rec)
 		if err != nil {
@@ -92,6 +112,10 @@ func (r *Reporter) Report(t session.Turn) error {
 //
 //	turn 12 | prefix preserved 100% | 0 tokens reprocessed
 //	turn 13 | prefix preserved 41% | ~31k tokens reprocessed | MUTATION at msg[3]
+//
+// Under --pin, when the canonical for this session was lost to eviction so the
+// turn was forwarded unreconciled, a trailing warning is appended so the user
+// knows the green "0 reprocessed" line does not mean pin is working.
 func HumanLine(t session.Turn) string {
 	line := fmt.Sprintf("turn %d | prefix preserved %.0f%% | %s tokens reprocessed",
 		t.TurnNum, t.PreservedPrefixPct, humanizeTokens(t.ReprocessedTokens))
@@ -102,6 +126,9 @@ func HumanLine(t session.Turn) string {
 	// exact byte offset and the field that broke prefix-stability.
 	if t.Layout.Diverged && t.Layout.Field != "" && t.Layout.Field != "message-count" {
 		line += fmt.Sprintf(" | %s broke prefix at byte %d", t.Layout.Field, t.Layout.ByteOffset)
+	}
+	if t.PinCoverageLost {
+		line += " | WARN: canonical evicted, --pin not applied this turn (raise --max-sessions)"
 	}
 	return line
 }

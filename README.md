@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <a href="https://github.com/SuperMarioYL/cachepin/releases"><img src="https://img.shields.io/badge/release-v0.3.0-6d28d9.svg" alt="release v0.3.0" /></a>
+  <a href="https://github.com/SuperMarioYL/cachepin/releases"><img src="https://img.shields.io/badge/release-v0.4.0-6d28d9.svg" alt="release v0.4.0" /></a>
   <a href="https://github.com/SuperMarioYL/cachepin/actions"><img src="https://img.shields.io/badge/CI-go%20build%20%2B%20test-success.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/go-1.24-00ADD8.svg" alt="Go 1.24" />
   <img src="https://img.shields.io/badge/KV%20Cache-pinned-6d28d9.svg" alt="KV Cache" />
@@ -122,10 +122,11 @@ CachePin is configured entirely by flags — no config file.
 | `--upstream` | string | *(required)* | Base URL of the OpenAI-compatible model server, e.g. `http://localhost:8080` |
 | `--listen` | string | `:8089` | Address CachePin's proxy binds to |
 | `--pin` | bool | `false` | Reconcile mutated requests to append-only form so the upstream KV Cache survives |
-| `--ndjson` | string | *(off)* | Path to also write one machine-readable metrics object per turn |
+| `--ndjson` | string | *(off)* | Path to also write one machine-readable metrics object per turn (opened in **append** mode, so restarts accumulate) |
 | `--max-sessions` | int | `1024` | Cap on tracked conversations; the least-recently-used session is evicted past it (`0` = unbounded) |
+| `--idle-ttl` | duration | `0` | Evict sessions whose last turn is older than this (e.g. `10m`, `1h`); `0` keeps only the `--max-sessions` count cap |
 
-CachePin holds session state in memory per process and never persists it to disk. The `--max-sessions` cap keeps that footprint bounded for a long-lived or shared deployment — past it the idlest session is evicted, so memory does not grow without limit as new conversations arrive.
+CachePin holds session state in memory per process and never persists it to disk. The `--max-sessions` cap keeps that footprint bounded for a long-lived or shared deployment — past it the idlest session is evicted, so memory does not grow without limit as new conversations arrive. `--idle-ttl` additionally expires sessions that have simply gone quiet, so a sparse long-uptime deployment keeps memory bounded even with zero new traffic. If `--pin` is on and a session's canonical was lost to eviction, the next turn for it is forwarded unreconciled with an explicit `WARN: canonical evicted` line (and a `pin_coverage_lost:true` NDJSON field) so you know to raise `--max-sessions`.
 
 ## Benchmark
 
@@ -158,6 +159,7 @@ If you want a batteries-included agent, CodeWhale is the better answer. If you w
 - [x] **m3 — pin & bench**: `--pin` reconciliation that keeps the upstream KV Cache alive, plus the reproducible 50-turn benchmark.
 - [x] **m4 — context-layout linter** *(v0.2.0, deepened v0.3.0)*: byte-level prefix diff that names the exact offset and field that broke prefix-stability. v0.3.0 makes its pinpoint coordinates always present (offset 0 / `msg[0]` preserved, no-divergence unified to `-1`) so every turn emits a consistent field set.
 - [x] **v0.3.0 hardening**: guard the session store against concurrent multi-session traffic, make `--pin` per-turn metrics match the benchmark, and bound memory with LRU session eviction (`--max-sessions`).
+- [x] **v0.4.0 hardening**: make `--ndjson` survive restarts and concurrent multi-session writes (append + a write mutex), warn when `--pin` coverage is voided by eviction instead of reporting silent-green metrics, and add `--idle-ttl` so idle sessions expire even without new traffic.
 - [ ] **Future**: protocol spec for harness ↔ server append-only context; ecosystem docs links.
 
 ## Contributing

@@ -15,6 +15,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"sync"
+	"time"
 
 	"github.com/SuperMarioYL/cachepin/internal/openai"
 )
@@ -54,6 +55,11 @@ type Turn struct {
 	// precise field (system prompt, tool schema, ordering, whitespace) that broke
 	// prefix-stability.
 	Layout openai.LayoutDiff
+	// PinCoverageLost is set by the --pin interceptor (not the tracker itself)
+	// when the session's canonical was lost to eviction, so the turn was forwarded
+	// unreconciled despite --pin. It surfaces the silent-green-while-reprocessing
+	// case in both the human line and NDJSON (v0.4.0).
+	PinCoverageLost bool
 }
 
 // Session is the append-only ground truth for one conversation.
@@ -62,6 +68,10 @@ type Session struct {
 	canonical  []openai.Message
 	lastPrefix int
 	turns      int
+	// lastSeen is updated on every Observe and read by idle-TTL eviction so the
+	// tracker can drop sessions that have gone quiet even when no new session
+	// arrives to push them out under the LRU count cap (v0.4.0 --idle-ttl).
+	lastSeen time.Time
 	// elem is this session's node in the Tracker's LRU order list, kept so
 	// eviction and recency updates are O(1).
 	elem *list.Element
@@ -81,26 +91,58 @@ const DefaultMaxSessions = 1024
 // owner of the reconciled-canonical store that pin mode reads from — folding
 // that store in here (v0.3.0) removed a parallel, unguarded map from main that
 // crashed under concurrent multi-session traffic.
+//
+// v0.4.0 adds two eviction refinements: an idle TTL (idleTTL) so sessions that
+// have gone quiet are dropped on the next Observe even without new traffic, and
+// a bounded evicted set so --pin can warn (via WasEvicted) when a returning
+// session's canonical was lost to eviction instead of silently voiding the pin
+// guarantee with green metrics.
 type Tracker struct {
 	mu          sync.Mutex
 	sessions    map[string]*Session
-	order       *list.List // front = most recently used; back = next eviction victim
-	maxSessions int        // 0 = unbounded
+	order       *list.List    // front = most recently used; back = next eviction victim
+	maxSessions int           // 0 = unbounded
+	idleTTL     time.Duration // 0 = no idle expiry; only the count cap applies
+	// evicted records session ids that were dropped by eviction but may return;
+	// it lets --pin distinguish "first-ever request" from "returning after
+	// eviction" so it can warn instead of reporting silent green metrics. It is
+	// bounded (evictedCap) so churn does not leak it.
+	evicted    map[string]struct{}
+	evictedCap int
+	now        func() time.Time
 }
 
-// NewTracker returns a Tracker with the default max-sessions cap.
+// NewTracker returns a Tracker with the default max-sessions cap and no idle TTL.
 func NewTracker() *Tracker {
-	return NewTrackerWithMax(DefaultMaxSessions)
+	return NewTrackerWithMaxTTL(DefaultMaxSessions, 0)
 }
 
 // NewTrackerWithMax returns a Tracker whose sessions map is bounded to max
 // sessions via LRU eviction. A non-positive max disables eviction (unbounded),
 // which is useful for tests and short-lived processes that never risk the leak.
+// Idle TTL is disabled (0); use NewTrackerWithMaxTTL to enable it.
 func NewTrackerWithMax(max int) *Tracker {
+	return NewTrackerWithMaxTTL(max, 0)
+}
+
+// NewTrackerWithMaxTTL returns a Tracker bounded by both a max-sessions LRU cap
+// and a per-session idle TTL. Either may be zero to disable that bound: a
+// non-positive max means no count cap, and a non-positive idleTTL means idle
+// sessions are only evicted when a new session pushes them out under the count
+// cap. The now hook lets tests pin the clock.
+func NewTrackerWithMaxTTL(max int, idleTTL time.Duration) *Tracker {
+	cap := max
+	if cap <= 0 {
+		cap = DefaultMaxSessions
+	}
 	return &Tracker{
 		sessions:    make(map[string]*Session),
 		order:       list.New(),
 		maxSessions: max,
+		idleTTL:     idleTTL,
+		evicted:     make(map[string]struct{}),
+		evictedCap:  cap,
+		now:         time.Now,
 	}
 }
 
@@ -111,17 +153,23 @@ func (t *Tracker) Observe(msgs []openai.Message) Turn {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	now := t.now()
 	id := SessionID(msgs)
 	s := t.sessions[id]
 	if s == nil {
-		s = &Session{ID: id}
+		s = &Session{ID: id, lastSeen: now}
 		s.elem = t.order.PushFront(s)
 		t.sessions[id] = s
-		t.evictIfNeeded()
+		// A returning-after-eviction session is no longer "evicted" now that it
+		// is live again — clear the flag so a future eviction re-arms the
+		// --pin warning rather than a stale one persisting.
+		delete(t.evicted, id)
+		t.evictIfNeeded(now)
 	} else {
 		// Mark this session most-recently-used so the LRU victim is the one
 		// idle the longest, not merely the oldest insertion.
 		t.order.MoveToFront(s.elem)
+		s.lastSeen = now
 	}
 
 	prevLen := len(s.canonical)
@@ -191,21 +239,74 @@ func (t *Tracker) Len() int {
 	return len(t.sessions)
 }
 
-// evictIfNeeded enforces the max-sessions cap by dropping least-recently-used
-// sessions until the map is at or below the cap. Called with t.mu held.
-func (t *Tracker) evictIfNeeded() {
-	if t.maxSessions <= 0 {
+// WasEvicted reports whether sid was dropped by eviction and has not yet been
+// re-observed. It lets the --pin interceptor distinguish a first-ever request
+// (no prior canonical, no warning) from a returning-after-eviction request
+// (prior canonical lost — pin coverage was just voided, warn the user). It is
+// best-effort: the evicted set is bounded, so under extreme churn a very old
+// eviction may have aged out of the set.
+func (t *Tracker) WasEvicted(sid string) bool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	_, ok := t.evicted[sid]
+	return ok
+}
+
+// evictIfNeeded enforces the idle-TTL and max-sessions bounds by dropping
+// least-recently-used sessions. Called with t.mu held. Idle-TTL eviction runs
+// whenever idleTTL > 0 (even under an unbounded count cap) so quiet sessions
+// expire without new traffic; the count cap runs whenever maxSessions > 0. Each
+// victim's id is recorded in the evicted set (bounded) so WasEvicted can warn
+// --pin on return.
+func (t *Tracker) evictIfNeeded(now time.Time) {
+	// Idle TTL: drop back-of-list sessions whose lastSeen is older than idleTTL.
+	// The order list is least-recently-observed-ordered thanks to MoveToFront,
+	// so the back is always the idlest live session.
+	if t.idleTTL > 0 {
+		for {
+			back := t.order.Back()
+			if back == nil {
+				break
+			}
+			victim := back.Value.(*Session)
+			if now.Sub(victim.lastSeen) <= t.idleTTL {
+				break // back is still fresh; everything in front of it is fresher
+			}
+			t.order.Remove(back)
+			delete(t.sessions, victim.ID)
+			t.recordEvicted(victim.ID)
+		}
+	}
+	// Count cap: drop LRU sessions until the map is at or below the cap.
+	if t.maxSessions > 0 {
+		for len(t.sessions) > t.maxSessions {
+			back := t.order.Back()
+			if back == nil {
+				return
+			}
+			victim := back.Value.(*Session)
+			t.order.Remove(back)
+			delete(t.sessions, victim.ID)
+			t.recordEvicted(victim.ID)
+		}
+	}
+}
+
+// recordEvicted adds sid to the bounded evicted set. If the set is at its cap,
+// an arbitrary entry is dropped first so churn does not leak it (map iteration
+// order is unspecified in Go, so the victim is non-deterministic — acceptable
+// for a best-effort warning set).
+func (t *Tracker) recordEvicted(sid string) {
+	if t.evictedCap <= 0 {
 		return
 	}
-	for len(t.sessions) > t.maxSessions {
-		back := t.order.Back()
-		if back == nil {
-			return
+	if len(t.evicted) >= t.evictedCap {
+		for k := range t.evicted {
+			delete(t.evicted, k)
+			break
 		}
-		victim := back.Value.(*Session)
-		t.order.Remove(back)
-		delete(t.sessions, victim.ID)
 	}
+	t.evicted[sid] = struct{}{}
 }
 
 // LongestCommonPrefix returns the number of leading messages a and b share, by
