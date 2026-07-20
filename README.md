@@ -9,7 +9,7 @@
 <p align="center"><strong>English</strong> | <a href="./README.zh-CN.md">简体中文</a></p>
 
 <p align="center">
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
+  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache License 2.0" /></a>
   <a href="https://github.com/SuperMarioYL/cachepin/releases"><img src="https://img.shields.io/badge/release-v0.4.0-6d28d9.svg" alt="release v0.4.0" /></a>
   <a href="https://github.com/SuperMarioYL/cachepin/actions"><img src="https://img.shields.io/badge/CI-go%20build%20%2B%20test-success.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/go-1.24-00ADD8.svg" alt="Go 1.24" />
@@ -168,7 +168,7 @@ Issues and PRs welcome — file an issue describing your harness + server combo 
 
 ## License
 
-MIT © 2026 SuperMarioYL
+Apache-2.0 © 2026 SuperMarioYL
 
 ## Share this
 
