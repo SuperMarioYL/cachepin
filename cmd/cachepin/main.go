@@ -148,30 +148,29 @@ func buildProxy(cfg Config, human, nd io.Writer) (*proxy.Proxy, error) {
 		}
 
 		sid := session.SessionID(req.Messages)
-		prior := tracker.Canonical(sid)
-		// pinCoverageLost is true only under --pin when the session's canonical
-		// was lost to eviction since the last turn — pin.Reconcile(nil, …) is a
-		// no-op in that case, so the raw mutated request is forwarded while
-		// Observe would otherwise report green 0-reprocessed metrics. The flag
-		// surfaces it in both the human line and NDJSON (v0.4.0).
-		pinCoverageLost := false
-
-		// What we actually forward upstream (and thus what the upstream caches
-		// against). In --pin mode the reconciled array is what's sent upstream,
-		// so observe THAT — matching bench/benchmark.go, which feeds the
-		// reconciled array to the pinned tracker — so per-turn metrics reflect
-		// upstream reality rather than the raw mutated request (v0.3.0 fix).
-		// Observing the raw mutated request instead made --pin metrics overstate
-		// reprocessing every turn and contradict the benchmark. In non-pin mode
-		// the raw request is forwarded verbatim, so observe it as-is.
-		observed := req.Messages
 		out := body
+
 		if cfg.Pin {
-			if prior == nil && tracker.WasEvicted(sid) {
-				pinCoverageLost = true
-			}
-			reconciled, changed := pin.Reconcile(prior, req.Messages)
-			observed = reconciled
+			// Reconcile + observe the reconciled array in ONE critical section so
+			// two concurrent same-session --pin requests cannot interleave between
+			// the Canonical read and the Observe store — the v0.4.0-deferred
+			// same-session TOCTOU (fix-same-session-pin-reconcile-race): G2 read
+			// the same stale prior, reconciled against it, and stored first; G1
+			// then stored its reconciled (computed from the stale prior, missing
+			// G2's turn), overwriting G2 and dropping it from canonical so the
+			// next Reconcile used the wrong ground truth. pin.Reconcile is a pure
+			// function, so passing it as a callback to ReconcileAndObserve keeps
+			// the pin -> session import the only edge (no session -> pin cycle).
+			// The closure surfaces reconciled + changed via captured locals so the
+			// body can be re-marshaled; PinCoverageLost is set inside the lock.
+			var (
+				reconciled []openai.Message
+				changed    bool
+			)
+			turn := tracker.ReconcileAndObserve(sid, req.Messages, func(prior []openai.Message) ([]openai.Message, bool) {
+				reconciled, changed = pin.Reconcile(prior, req.Messages)
+				return reconciled, changed
+			})
 			if changed {
 				req.SetMessages(reconciled)
 				b, err := req.Marshal()
@@ -180,14 +179,20 @@ func buildProxy(cfg Config, human, nd io.Writer) (*proxy.Proxy, error) {
 				}
 				out = b
 			}
+			if err := reporter.Report(turn); err != nil {
+				fmt.Fprintln(os.Stderr, "cachepin: report:", err)
+			}
+			return out, nil
 		}
 
-		turn := tracker.Observe(observed)
-		turn.PinCoverageLost = pinCoverageLost
+		// Non-pin mode: forward the raw request verbatim and observe it as-is,
+		// so per-turn metrics reflect what's actually sent upstream (the raw
+		// request is what the upstream caches against). PinCoverageLost stays
+		// false (its zero value) — pin coverage is not at play without --pin.
+		turn := tracker.Observe(req.Messages)
 		if err := reporter.Report(turn); err != nil {
 			fmt.Fprintln(os.Stderr, "cachepin: report:", err)
 		}
-
 		return out, nil
 	}
 

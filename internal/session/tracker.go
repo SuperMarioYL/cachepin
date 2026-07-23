@@ -152,25 +152,43 @@ func NewTrackerWithMaxTTL(max int, idleTTL time.Duration) *Tracker {
 func (t *Tracker) Observe(msgs []openai.Message) Turn {
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	return t.observeLocked(SessionID(msgs), msgs)
+}
 
+// observeLocked is the lock-held core of Observe (and ReconcileAndObserve): it
+// looks up (or creates) the session for sid, updates its LRU recency, diffs msgs
+// against the prior canonical history, builds the per-turn report, and stores
+// msgs as the new canonical. The caller MUST hold t.mu. Extracted (v0.5.0) so
+// the --pin path can observe the reconciled array under the same lock it read
+// the canonical under (the same-session race fix) without re-locking or
+// duplicating this body.
+func (t *Tracker) observeLocked(sid string, msgs []openai.Message) Turn {
 	now := t.now()
-	id := SessionID(msgs)
-	s := t.sessions[id]
+	s := t.sessions[sid]
 	if s == nil {
-		s = &Session{ID: id, lastSeen: now}
+		s = &Session{ID: sid, lastSeen: now}
 		s.elem = t.order.PushFront(s)
-		t.sessions[id] = s
+		t.sessions[sid] = s
 		// A returning-after-eviction session is no longer "evicted" now that it
 		// is live again — clear the flag so a future eviction re-arms the
 		// --pin warning rather than a stale one persisting.
-		delete(t.evicted, id)
-		t.evictIfNeeded(now)
+		delete(t.evicted, sid)
 	} else {
 		// Mark this session most-recently-used so the LRU victim is the one
 		// idle the longest, not merely the oldest insertion.
 		t.order.MoveToFront(s.elem)
 		s.lastSeen = now
 	}
+	// Idle-TTL + count-cap eviction runs on EVERY Observe (v0.5.0 fix
+	// fix-idle-ttl-skips-existing-session-observe): the v0.4.0 path only swept
+	// inside the new-session branch, so a deployment where only sticky sessions
+	// return (no new session ever arrives) never evicted idle back-of-list
+	// sessions — an unbounded leak under `--max-sessions 0 --idle-ttl 10m` (the
+	// exact unbounded-count config m5 targets). The just-touched session is at
+	// the front with lastSeen=now, so it is never a victim; idle sessions
+	// expire on the next Observe of any session, meeting the m5 idle-TTL
+	// contract.
+	t.evictIfNeeded(now)
 
 	prevLen := len(s.canonical)
 	lcp := LongestCommonPrefix(s.canonical, msgs)
@@ -198,7 +216,7 @@ func (t *Tracker) Observe(msgs []openai.Message) Turn {
 
 	s.turns++
 	turn := Turn{
-		SessionID:          id,
+		SessionID:          sid,
 		TurnNum:            s.turns,
 		PrevLen:            prevLen,
 		IncomingLen:        len(msgs),
@@ -213,6 +231,62 @@ func (t *Tracker) Observe(msgs []openai.Message) Turn {
 
 	s.canonical = cloneMessages(msgs)
 	s.lastPrefix = len(msgs)
+	return turn
+}
+
+// ReconcileAndObserve runs the --pin interceptor's Canonical read, the reconcile
+// callback, and the Observe store in a single critical section (v0.5.0,
+// fix-same-session-pin-reconcile-race). The pre-v0.5.0 --pin path read
+// Canonical (lock-clone-unlock), ran pin.Reconcile unlocked, then Observe
+// (re-lock-store): two concurrent goroutines for the SAME session id could
+// interleave in that window — both read the same stale prior, each reconciled
+// against it, and the later Observe overwrote the earlier, dropping a turn from
+// the canonical history so the NEXT turn's Reconcile was computed against the
+// wrong ground truth (silent turn-loss / wrong pin rewrite). Holding t.mu across
+// all three closes the TOCTOU; this is the "real but narrow same-session
+// concurrent race" the v0.4.0 changelog deferred to v0.5.0 as too big for the
+// time budget, scoped here to one new method (no architecture change).
+//
+// reconcile is called with a CLONE of the session's current canonical (nil if
+// the session is unknown or was evicted) and returns the reconciled messages
+// plus whether it rewrote the request. The interceptor passes a closure over
+// pin.Reconcile — pin is a pure function, so passing it as a callback keeps the
+// pin -> session import edge the only one (no session -> pin cycle). The
+// closure MUST NOT call back into the tracker's public locking methods
+// (Canonical/WasEvicted/Observe): this method holds t.mu for the whole call, so
+// a re-entrant lock would deadlock. PinCoverageLost (prior was nil because the
+// session was evicted since the last turn) is computed here, inside the
+// critical section, and set on the returned Turn — so the v0.4.0
+// silent-green-while-reprocessing warning stays correct under concurrency.
+//
+// The reconciled array is what's observed and stored as canonical, matching
+// bench/benchmark.go's pinned tracker semantics, so the next turn's Reconcile
+// is computed against the just-stored ground truth. Done = a -race run under
+// two concurrent same-session --pin requests keeps both turns in canonical (no
+// overwrite, no turn loss).
+func (t *Tracker) ReconcileAndObserve(sid string, incoming []openai.Message, reconcile func(prior []openai.Message) (reconciled []openai.Message, changed bool)) Turn {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	s := t.sessions[sid]
+	var prior []openai.Message
+	wasEvicted := false
+	if s != nil {
+		prior = cloneMessages(s.canonical)
+	} else if _, ok := t.evicted[sid]; ok {
+		wasEvicted = true
+	}
+
+	// incoming is the interceptor's reference array (the closure may close over
+	// it); the reconciled array the callback returns is what we store + observe.
+	reconciled, _ := reconcile(prior)
+	coverageLost := prior == nil && wasEvicted
+
+	// Observe the reconciled array under the same lock we read the canonical
+	// under — observeLocked does the session lookup/recency/Turn/store, so this
+	// is the single critical section that closes the same-session TOCTOU.
+	turn := t.observeLocked(sid, reconciled)
+	turn.PinCoverageLost = coverageLost
 	return turn
 }
 

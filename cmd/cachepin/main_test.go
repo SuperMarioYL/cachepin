@@ -356,3 +356,74 @@ func TestBuildProxyPinWarnsOnEvictedSession(t *testing.T) {
 		t.Errorf("WARN should name the remediation; human = %q", human.String())
 	}
 }
+
+// TestBuildProxyPinSameSessionConcurrentNoTurnLoss is the integration regression
+// test for fix-same-session-pin-reconcile-race: the wired --pin interceptor must
+// route through ReconcileAndObserve (one critical section) so two concurrent
+// same-session --pin requests cannot drop a turn from the canonical history.
+// Each goroutine appends a unique assistant turn to the SAME session; after all
+// complete, one final request's reconciled upstream body must contain EVERY
+// appended turn — turn loss from the pre-v0.5.0 Canonical->Reconcile->Observe
+// TOCTOU would drop some. Run under `go test -race`.
+func TestBuildProxyPinSameSessionConcurrentNoTurnLoss(t *testing.T) {
+	var lastBody string
+	var lastMu sync.Mutex
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		lastMu.Lock()
+		lastBody = string(b)
+		lastMu.Unlock()
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer upstream.Close()
+
+	cfg := Config{Upstream: upstream.URL, Listen: ":0", Pin: true}
+	p, err := buildProxy(cfg, io.Discard, nil)
+	if err != nil {
+		t.Fatalf("buildProxy: %v", err)
+	}
+	front := httptest.NewServer(p)
+	defer front.Close()
+
+	// Same system + first-user message => same session id. Each goroutine
+	// appends a unique assistant turn to that one session concurrently.
+	const n = 64
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start // release all goroutines together to maximize interleaving
+			body := fmt.Sprintf(
+				`{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"u"},{"role":"assistant","content":"turn-%d"}]}`,
+				i)
+			resp, err := http.Post(front.URL+"/v1/chat/completions", "application/json", strings.NewReader(body))
+			if err != nil {
+				t.Errorf("request %d: %v", i, err)
+				return
+			}
+			resp.Body.Close()
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	// One final request: its reconciled body = canonical-so-far + "FINAL", so
+	// it exposes the full accumulated canonical. Every appended turn must appear
+	// (quote-delimited so turn-1 does not match inside turn-10/turn-11).
+	post(t, front.URL, `{"model":"m","messages":[{"role":"system","content":"s"},{"role":"user","content":"u"},{"role":"assistant","content":"FINAL"}]}`)
+
+	lastMu.Lock()
+	final := lastBody
+	lastMu.Unlock()
+	for i := 0; i < n; i++ {
+		want := fmt.Sprintf("\"turn-%d\"", i)
+		if !strings.Contains(final, want) {
+			t.Errorf("turn %s lost from canonical (same-session pin race); final upstream body: %s", want, final)
+		}
+	}
+	if !strings.Contains(final, "\"FINAL\"") {
+		t.Errorf("final turn missing from upstream body: %s", final)
+	}
+}

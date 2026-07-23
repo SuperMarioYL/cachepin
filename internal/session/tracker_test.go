@@ -3,6 +3,7 @@ package session
 import (
 	"encoding/json"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -329,5 +330,146 @@ func TestTrackerWasEvictedClearsOnReObserve(t *testing.T) {
 	tr.Observe(m0)
 	if tr.WasEvicted(id0) {
 		t.Errorf("session 0 re-observed; WasEvicted should be false (flag cleared)")
+	}
+}
+
+// TestTrackerIdleTTLEvictsOnExistingSessionReobserve is the regression test for
+// fix-idle-ttl-skips-existing-session-observe: the v0.4.0 path only swept idle
+// sessions inside the NEW-session branch of Observe, so re-observing an EXISTING
+// (returning) session — the common sparse long-uptime deployment where only
+// sticky sessions come back — never triggered evictIfNeeded and idle
+// back-of-list sessions leaked forever. Under `--max-sessions 0 --idle-ttl 10m`
+// (the exact unbounded-count config m5 targets) this was an unbounded memory
+// leak, and the shipped TestTrackerIdleTTLEvictsQuietSession only covered the
+// new-session trigger (it observed a brand-new session to drive eviction). The
+// v0.5.0 fix hoists evictIfNeeded out of the `if s == nil` branch so it runs on
+// every Observe; the just-touched session is at the front with lastSeen=now so
+// it is never a victim, but idle sessions expire on the next Observe of any
+// session.
+func TestTrackerIdleTTLEvictsOnExistingSessionReobserve(t *testing.T) {
+	clock := time.Unix(1_750_000_000, 0).UTC()
+	tr := NewTrackerWithMaxTTL(0, 5*time.Minute) // unbounded count, 5m idle TTL
+	tr.now = func() time.Time { return clock }
+
+	m0, id0 := sessionN(0)
+	m1, id1 := sessionN(1)
+	tr.Observe(m0) // t0: session 0 created (front)
+	tr.Observe(m1) // t0: session 1 created (front; session 0 now back of list)
+
+	// Both sessions go idle past the TTL with NO new session arriving — only a
+	// returning (existing) session is re-observed, which is the else branch the
+	// v0.4.0 sweep skipped.
+	clock = clock.Add(10 * time.Minute)
+	tr.Observe(m0) // re-observe EXISTING session 0 — must trigger idle eviction
+
+	// Session 1 was idle > TTL and at the back; it must be evicted on this
+	// Observe even though no NEW session arrived. Before the fix it leaked.
+	if tr.Canonical(id1) != nil {
+		t.Errorf("idle session 1 should have been evicted when existing session 0 was re-observed; still live (leak)")
+	}
+	if !tr.WasEvicted(id1) {
+		t.Errorf("idle-evicted session 1 should be recorded as evicted (for the --pin warning)")
+	}
+	// The just-touched session 0 is fresh (lastSeen=now) and at the front — it
+	// must survive (eviction never touches the freshest session).
+	if tr.Canonical(id0) == nil {
+		t.Errorf("just-observed session 0 should NOT have been evicted (it is fresh at the front)")
+	}
+}
+
+// appendReconcile mirrors pin.Reconcile's LCP contract (canonical[:lcp] +
+// incoming[lcp:], taking the preserved prefix from the full canonical) without
+// importing pin — the session package cannot import pin (pin imports session),
+// so the ReconcileAndObserve atomicity test uses this local stand-in to
+// exercise the tracker's critical-section contract directly.
+func appendReconcile(prior, incoming []openai.Message) ([]openai.Message, bool) {
+	lcp := LongestCommonPrefix(prior, incoming)
+	if lcp == len(prior) {
+		return incoming, false
+	}
+	tail := incoming[lcp:]
+	out := make([]openai.Message, 0, len(prior)+len(tail))
+	out = append(out, prior...)
+	out = append(out, tail...)
+	return out, true
+}
+
+// TestReconcileAndObserveSameSessionNoTurnLoss is the regression test for
+// fix-same-session-pin-reconcile-race: the pre-v0.5.0 --pin path read Canonical
+// (lock-clone-unlock), ran the reconcile unlocked, then Observe (re-lock-store)
+// — a TOCTOU window where two concurrent same-session goroutines each read the
+// same stale prior, reconciled against it, and the later Observe overwrote the
+// earlier, dropping a turn from canonical so the next Reconcile used the wrong
+// ground truth. ReconcileAndObserve holds t.mu across all three, so every
+// appended turn survives. Run under `go test -race -run ReconcileAndObserve`.
+func TestReconcileAndObserveSameSessionNoTurnLoss(t *testing.T) {
+	tr := NewTracker()
+	seed := []openai.Message{msg("system", "s"), msg("user", "u")}
+	sid := SessionID(seed)
+
+	// Each goroutine appends a UNIQUE assistant turn to the SAME session via the
+	// pin reconcile path (a closure over appendReconcile, exactly as the proxy
+	// passes a closure over pin.Reconcile).
+	const n = 64
+	var wg sync.WaitGroup
+	start := make(chan struct{})
+	for i := 0; i < n; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			<-start // release all goroutines together to maximize interleaving
+			incoming := append(append([]openai.Message{}, seed...),
+				msg("assistant", fmt.Sprintf("turn-%d", i)))
+			tr.ReconcileAndObserve(sid, incoming, func(prior []openai.Message) ([]openai.Message, bool) {
+				return appendReconcile(prior, incoming)
+			})
+		}(i)
+	}
+	close(start)
+	wg.Wait()
+
+	got := tr.Canonical(sid)
+	// Seed (2) + one appended turn per goroutine. Turn loss from the race would
+	// leave the canonical short.
+	if len(got) != 2+n {
+		t.Fatalf("canonical has %d messages, want %d (seed + %d turns; turns were lost to the same-session race)", len(got), 2, n)
+	}
+	// Every unique turn must survive — no overwrite/loss.
+	seen := make(map[string]bool, n)
+	for _, m := range got[2:] {
+		var s string
+		_ = json.Unmarshal(m.Content, &s)
+		seen[s] = true
+	}
+	for i := 0; i < n; i++ {
+		want := fmt.Sprintf("turn-%d", i)
+		if !seen[want] {
+			t.Errorf("turn %q lost from canonical (same-session race)", want)
+		}
+	}
+}
+
+// TestReconcileAndObserveSurfacesEvictionCoverageLoss confirms the
+// ReconcileAndObserve path still computes PinCoverageLost (prior was nil
+// because the session was evicted) inside the critical section, so the v0.4.0
+// silent-green-while-reprocessing warning survives the v0.5.0 atomicity fix.
+func TestReconcileAndObserveSurfacesEvictionCoverageLoss(t *testing.T) {
+	tr := NewTrackerWithMax(1) // cap 1 so a second session evicts the first
+	m0, id0 := sessionN(0)
+	m1, _ := sessionN(1)
+	tr.Observe(m0) // session 0 live
+	tr.Observe(m1) // overflow cap 1 -> evict session 0
+	if !tr.WasEvicted(id0) {
+		t.Fatal("precondition: session 0 should be flagged evicted")
+	}
+
+	// Session 0 returns under --pin with a mutated tail. Reconcile(nil, …) is a
+	// no-op, so coverage was lost; ReconcileAndObserve must report it.
+	incoming := append(append([]openai.Message{}, m0...), msg("user", "new-after-eviction"))
+	turn := tr.ReconcileAndObserve(id0, incoming, func(prior []openai.Message) ([]openai.Message, bool) {
+		return appendReconcile(prior, incoming)
+	})
+	if !turn.PinCoverageLost {
+		t.Errorf("ReconcileAndObserve should set PinCoverageLost when prior was nil because the session was evicted")
 	}
 }

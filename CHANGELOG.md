@@ -4,6 +4,67 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-07-23
+
+This release folds two repo-verified correctness fixes into the v0.4.0
+session/eviction story and finishes the long-deferred cacheguard archive,
+rather than widening scope. Idle-TTL eviction now actually fires on every
+`Observe` (not only on new-session creation), and `--pin`'s
+Canonical→Reconcile→Observe is now atomic per request so a same-session
+concurrent turn can no longer be silently dropped from the canonical history.
+
+### Fixed
+
+- **Idle-TTL eviction now runs on every `Observe`, not only when a new session
+  is created.** `evictIfNeeded` (the idle-TTL back-of-list sweep) was invoked
+  only on the new-session path of `Observe`, so re-observing an *existing*
+  session — the common sparse long-uptime deployment where only sticky sessions
+  return — never triggered it and idle back-of-list sessions leaked forever.
+  Under `--max-sessions 0 --idle-ttl 10m` (the exact unbounded-count config
+  `--idle-ttl` targets) this was an unbounded memory leak, and the shipped
+  `TestTrackerIdleTTLEvictsQuietSession` only covered the new-session trigger.
+  `evictIfNeeded` is now hoisted out of the `if s == nil` branch so it runs
+  after the recency update on every `Observe`; the just-touched session is at
+  the front with `lastSeen=now` so it is never a victim, but idle sessions
+  expire on the next `Observe` of any session.
+
+- **`--pin`'s Canonical+Reconcile+Observe is now atomic for the same session.**
+  The `--pin` interceptor read `tracker.Canonical(sid)` (lock-clone-unlock),
+  ran `pin.Reconcile` unlocked, then `tracker.Observe` (re-lock-store). Two
+  concurrent goroutines for the SAME session id (parallel tool calls / batched
+  chat-completions a multi-agent harness fires against one session) could
+  interleave in that window — both read the same stale prior, each reconciled
+  against it, and the later `Observe` overwrote the earlier, dropping a turn
+  from the canonical history so the next `Reconcile` was computed against the
+  wrong ground truth (silent turn-loss / wrong pin rewrite). This is the "real
+  but narrow same-session concurrent race" the v0.4.0 changelog deferred to
+  v0.5.0 as too big for the time budget. A new `Tracker.ReconcileAndObserve`
+  method holds `t.mu` across the Canonical read, the reconcile callback, and the
+  Observe store + `PinCoverageLost` computation in a single critical section;
+  `pin.Reconcile` is passed as a callback (it is a pure function) to avoid a
+  `session`↔`pin` import cycle. One critical section per request, no
+  architecture change. A `-race` run under concurrent same-session `--pin`
+  requests now keeps every turn in canonical.
+
+### Added
+
+- **`cacheguard` archived.** The v0.3.0 `m4-context-layout-linter` milestone's
+  archive action ("set the cacheguard GitHub repo to `archived=true`") never
+  executed; `SuperMarioYL/cacheguard` was still a live, recently-pushed second
+  surface in the saturated KV-cache niche, contradicting the niche-WIDENING
+  ban. v0.5.0 executes `gh repo archive` and verifies `archived=true` via
+  `gh api`, retiring the duplicate so cachepin is the single canonical
+  byte-level prefix linter. (No new repo or top-level surface is shipped — this
+  retires one.)
+
+### Changed
+
+- **`LICENSE` is now part of the shipped-surface list.** The repo's `LICENSE`
+  file (already present) is now declared in the plan's `target_files` for
+  accurate bookkeeping, and the plan self-declares its GitHub repo
+  (`SuperMarioYL/cachepin`) in the frontmatter to reconcile the
+  orphan-oracle linkage. No code behavior changes.
+
 ## [0.4.0] - 2026-07-17
 
 This release hardens the v0.3.0 multi-session / eviction story rather than
@@ -105,6 +166,7 @@ finally agree with the benchmark, and long uptime no longer leaks memory.
 - **`--max-sessions` flag** caps the number of conversations tracked at once
   (LRU eviction past it); `0` disables the cap for short-lived processes.
 
+[0.5.0]: https://github.com/SuperMarioYL/cachepin/releases/tag/v0.5.0
 [0.4.0]: https://github.com/SuperMarioYL/cachepin/releases/tag/v0.4.0
 [0.3.0]: https://github.com/SuperMarioYL/cachepin/releases/tag/v0.3.0
 
