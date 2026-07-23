@@ -5,18 +5,19 @@
   "host": "cachepin.lei6393.com",
   "lang": { "primary": "zh", "toggle": true },
   "accent": ["#E11D48"],
+  "content_version": "v0.5.0",
   "hero": {
     "eyebrow": {
-      "zh": "钉住的前缀不再被悄悄赶走 · 日志重启不丢 · 空闲会话自动过期 · 长跑也不涨内存",
-      "en": "Pinned prefixes survive eviction · Logs survive restarts · Idle sessions expire · Long uptime stays bounded"
+      "zh": "钉住的前缀在并发下也不丢 · 空闲会话每轮都过期 · 日志重启不丢 · 长跑不涨内存",
+      "en": "Pinned prefixes hold under concurrency · Idle sessions expire every turn · Logs survive restarts · Long uptime stays bounded"
     },
     "headline": {
-      "zh": "你以为钉住的前缀还在缓存里\n其实早被悄悄赶走又重新计费了——现在它会告诉你，并守住该守住的那一份",
-      "en": "The prefixes you pinned were silently evicted and re-billed\n— now it tells you, and holds the line on what should stay cached"
+      "zh": "钉住的前缀，在并发与驱逐下都不再悄悄失效\n它替你守住该守的缓存，并告诉你哪一份溜了",
+      "en": "Pinned prefixes no longer slip away — under concurrency or eviction\nIt holds the cache that should stay, and tells you which slipped"
     },
     "sub": {
-      "zh": "一个单二进制，架在你的编码 Agent 和自托管模型服务之间。开启 --pin 后，当某个会话因内存压力被清出去又回来时，它会显式告警（pin_coverage_lost）而不是继续显示一切正常；--ndjson 日志改成追加写入，重启不丢、并发不乱序；再加一个 --idle-ttl，让空闲会话自动过期——长跑部署的内存不再无界增长。",
-      "en": "A single binary you drop between your coding agent and your self-hosted model server. With --pin on, when a session gets evicted under memory pressure and later returns, it emits an explicit WARN (pin_coverage_lost) instead of reporting all-green; the --ndjson log is opened in append mode so it survives restarts and stays ordered under concurrent writes; and a new --idle-ttl expires idle sessions on their own — long-uptime deployments keep memory bounded."
+      "zh": "一个单二进制，架在你的编码 Agent 和自托管模型服务之间。开启 --pin 后，无论某个会话被内存压力清走又回来，还是同一会话被并发投递的多轮请求，它都把该钉住的前缀守住、按调用顺序排好；--ndjson 日志追加写入、重启不丢；--idle-ttl 让空闲会话每一轮都过期——即便关掉会话数上限，长跑部署的内存也有界。",
+      "en": "A single binary you drop between your coding agent and your self-hosted model server. With --pin on, whether a session gets evicted under memory pressure and later returns, or multiple concurrent turns hit the same session, it holds the pinned prefix and keeps the order straight; the --ndjson log is append-only and survives restarts; and --idle-ttl expires idle sessions on every turn — so even with the session cap off, long-uptime memory stays bounded."
     },
     "command": "cachepin --upstream http://localhost:8080 --pin --idle-ttl 1h",
     "cta": { "zh": "开始使用", "en": "Get started" },
@@ -36,6 +37,18 @@
       ]
     },
     {
+      "title": { "zh": "同一会话并发投递，不再悄悄丢一轮", "en": "Concurrent same-session turns no longer get dropped" },
+      "body": {
+        "zh": "一个多 Agent 编排器对同一个会话并发投递多轮（并行工具调用、批量补全）时，旧版 --pin 在「读历史、重排、写回」之间会被另一轮插队——两轮读到同一份旧历史、各自重排，后写的覆盖先写的，这一轮就从钉住的历史里悄悄消失，下一轮重排便对着错的基准算。钉子看起来还在，其实少了一块。现在对同一会话的这几步合成一步、不再被插队，并发再多轮也按调用顺序整行落地，每一轮都留在历史里。",
+        "en": "When a multi-agent harness fires several concurrent turns at the same session (parallel tool calls, batched completions), the old --pin could be interleaved between read-history, reconcile, and write-back — both turns read the same stale prior, each reconciled against it, and the later write overwrote the earlier, so that turn silently dropped out of the pinned history and the next reconcile ran against the wrong ground truth. The pin looked intact but was missing a piece. Now those steps for one session run as a single step that can't be interleaved, so no matter how many turns land at once, they settle in call order and every turn stays in the history."
+      },
+      "chips": [
+        "› 同一会话几步合一",
+        "› 并发按调用顺序整行落地",
+        "› 每一轮都在历史里"
+      ]
+    },
+    {
       "title": { "zh": "重启不丢日志，并发也不乱序", "en": "Logs survive restarts — and stay ordered under load" },
       "body": {
         "zh": "旧版 --ndjson 每次重启都把先前攒下的面板日志清空；多会话并发时，每条请求抢同一文件位置，内核按拿锁顺序写，可能把第 N+1 轮写到第 N 轮前面——正好砸中你想要多会话隔离的场景。现在日志改成追加写入，重启后先前的轮次还在；并发写入被同一把锁护住，整行落地、按调用顺序排好。",
@@ -48,30 +61,30 @@
       ]
     },
     {
-      "title": { "zh": "长跑部署，内存不再无界增长", "en": "Long uptime, bounded memory — even with no new traffic" },
+      "title": { "zh": "关掉会话上限，空闲会话也每轮过期", "en": "Idle sessions expire every turn — even with the cap off" },
       "body": {
-        "zh": "会话数上限只在「新会话到来」时才清掉最旧的——一个长期在线、只服务几个偶尔空闲会话的代理，会把它们全钉在内存里永远不清。新增的 --idle-ttl（如 10m、1h）在下一次观察时顺手清掉超时者，不另起后台进程。稀疏、长在线、共享部署的内存就此有界，即便一整晚没有新流量。",
-        "en": "The session-count cap only clears the oldest when a *new* session arrives — a long-lived proxy serving a few sessions that each go idle kept all of them pinned in memory forever. The new --idle-ttl (e.g. 10m, 1h) expires idle ones on the next observation, with no background process. Sparse, long-uptime, shared deployments keep memory bounded — even through a night of zero new traffic."
+        "zh": "旧版的空闲过期只在「新会话到来」时才扫一次后段——可你开 --max-sessions 0 --idle-ttl 10m，正是想让空闲会话自己过期、不靠新流量；结果只有粘性会话来回跑、没有新会话，过期就永远不触发，空闲会话全钉在内存里漏到天亮。现在这把扫帚在每一轮之后都扫一次：刚碰过的会话在前头、不会被误清，空闲的则在下一轮任何会话到来时过期——不另起后台进程，长跑、稀疏、共享部署的内存就此有界。",
+        "en": "The old idle expiry only swept the back of the list when a brand-new session arrived — but you set --max-sessions 0 --idle-ttl 10m precisely so idle sessions expire on their own, without new traffic. With only sticky sessions returning and no new sessions, the sweep never fired, and every idle session stayed pinned in memory, leaking until morning. Now that sweep runs after every turn: the just-touched session sits at the front and is never a victim, while idle ones expire the next time any session is observed — no background process, so sparse, long-uptime, shared deployments keep memory bounded."
       },
       "chips": [
         "› --idle-ttl 10m / 1h",
-        "› 下次观察时清掉",
-        "› 无后台进程"
+        "› 每轮都扫，无需新流量",
+        "› --max-sessions 0 也安全"
       ]
     }
   ],
   "scene": {
     "kind": "hub-nodes",
-    "nodes": ["Pin silently voided", "Log wiped on restart", "Writes reordered", "Idle memory grows"]
+    "nodes": ["Pin silently voided", "Same-session turn dropped", "Log wiped on restart", "Writes reordered", "Idle memory grows"]
   },
   "cta": {
     "headline": {
-      "zh": "钉住该钉住的前缀，并告诉你哪一份丢了",
-      "en": "Pin the prefixes that should stay — and tell you which ones slipped"
+      "zh": "钉住该钉住的前缀——驱逐与并发下都不丢，并告诉你哪一份溜了",
+      "en": "Pin the prefixes that should stay — under eviction and concurrency, and tell you which slipped"
     },
     "sub": {
-      "zh": "开源、MIT、一个单二进制。架在编码 Agent 和你的模型服务之间，让 KV Cache 不再被悄悄赶走又重新计费。",
-      "en": "Open source, MIT, a single binary. Sit it between your coding agent and your model server so the KV Cache stops getting silently evicted and re-billed."
+      "zh": "开源、Apache-2.0、一个单二进制。架在编码 Agent 和你的模型服务之间，让 KV Cache 不再被悄悄赶走又重新计费。",
+      "en": "Open source, Apache-2.0, a single binary. Sit it between your coding agent and your model server so the KV Cache stops getting silently evicted and re-billed."
     },
     "button": { "zh": "在 GitHub 上开始", "en": "Get started on GitHub" }
   },
@@ -80,5 +93,19 @@
       "zh": "给编码 Agent 的 KV Cache 钉子",
       "en": "The pin that keeps your coding agent's KV Cache alive"
     }
-  }
+  },
+  "changelog": [
+    {
+      "version": "v0.5.0",
+      "date": "2026-07-23",
+      "zh": [
+        "空闲会话现在每一轮都过期——即便关掉会话数上限（--max-sessions 0 --idle-ttl 10m），长跑部署的内存也有界；过期不再只在「新会话到来」时才扫一次。",
+        "同一会话被并发投递的多轮请求不再悄悄丢一轮——读历史、重排、写回合成一个不可插队的步骤，并行工具调用和批量补全下每一轮都留在钉住的历史里。"
+      ],
+      "en": [
+        "Idle sessions now expire on every turn — memory stays bounded on long-uptime deployments even with the session cap off (--max-sessions 0 --idle-ttl 10m); the sweep no longer fires only when a brand-new session arrives.",
+        "Concurrent same-session turns no longer get silently dropped — read-history, reconcile, and write-back now run as one uninterruptible step, so every turn stays in the pinned history under parallel tool calls and batched completions."
+      ]
+    }
+  ]
 }
