@@ -357,6 +357,44 @@ func TestBuildProxyPinWarnsOnEvictedSession(t *testing.T) {
 	}
 }
 
+// TestStartupLogRedactsUpstreamCredentials is the end-to-end regression test
+// for fix-upstream-credentials-leaked-in-error-and-log at main.go:105. The
+// startup fmt.Printf prints to stdout, which is the same sink as the per-turn
+// metrics log, so a raw --upstream with userinfo leaked the credential into
+// any captured stdout. With the fix, the startup line renders the upstream via
+// proxy.RedactedUpstream. The listen address uses an invalid port so
+// http.ListenAndServe fails immediately and run() returns right after the
+// startup line is printed (no real listener starts).
+func TestStartupLogRedactsUpstreamCredentials(t *testing.T) {
+	old := os.Stdout
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	os.Stdout = w
+	cfg := Config{
+		Upstream: "http://user:secret@127.0.0.1:1",
+		Listen:   "127.0.0.1:99999", // invalid port -> ListenAndServe fails immediately
+	}
+	_ = run(cfg) // expected to return a ListenAndServe error after printing startup
+	w.Close()
+	os.Stdout = old
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read pipe: %v", err)
+	}
+	if strings.Contains(string(out), "secret") {
+		t.Errorf("startup log leaked upstream password: %q", string(out))
+	}
+	if strings.Contains(string(out), "user:secret") {
+		t.Errorf("startup log leaked upstream userinfo: %q", string(out))
+	}
+	// The redacted host must still be present so the startup line stays useful.
+	if !strings.Contains(string(out), "127.0.0.1:1") {
+		t.Errorf("startup log should still name the upstream host; got %q", string(out))
+	}
+}
+
 // TestBuildProxyPinSameSessionConcurrentNoTurnLoss is the integration regression
 // test for fix-same-session-pin-reconcile-race: the wired --pin interceptor must
 // route through ReconcileAndObserve (one critical section) so two concurrent

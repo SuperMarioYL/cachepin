@@ -102,7 +102,7 @@ func run(cfg Config) error {
 		return err
 	}
 
-	fmt.Printf("cachepin listening on %s -> upstream %s (pin=%v, max-sessions=%d, idle-ttl=%s)\n", cfg.Listen, cfg.Upstream, cfg.Pin, cfg.MaxSessions, cfg.IdleTTL)
+	fmt.Printf("cachepin listening on %s -> upstream %s (pin=%v, max-sessions=%d, idle-ttl=%s)\n", cfg.Listen, proxy.RedactedUpstream(cfg.Upstream), cfg.Pin, cfg.MaxSessions, cfg.IdleTTL)
 	return http.ListenAndServe(cfg.Listen, p)
 }
 

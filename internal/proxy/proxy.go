@@ -102,9 +102,28 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 // errorHandler reports an unreachable or failing upstream as a 502 rather than
-// letting the proxy hang or emit an empty response.
+// letting the proxy hang or emit an empty response. The upstream is rendered
+// via RedactedUpstream so any embedded userinfo never lands in the 502 body.
 func (p *Proxy) errorHandler(w http.ResponseWriter, _ *http.Request, err error) {
-	http.Error(w, fmt.Sprintf("cachepin: upstream %s error: %v", p.upstream, err), http.StatusBadGateway)
+	http.Error(w, fmt.Sprintf("cachepin: upstream %s error: %v", RedactedUpstream(p.upstream.String()), err), http.StatusBadGateway)
+}
+
+// RedactedUpstream parses raw as a URL and returns it rendered without any
+// embedded userinfo, so an authenticated upstream (e.g.
+// http://user:pass@remote or http://sk-key@remote, where the API key rides in
+// the username) never leaks its credential into a 502 error body or the
+// startup log. url.URL.Redacted is not enough — it masks only the password,
+// leaving a username-only API key exposed — so User is dropped entirely. If
+// raw is not a valid URL it is returned verbatim so a non-URL upstream string
+// is still surfaced.
+func RedactedUpstream(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return raw
+	}
+	c := *u
+	c.User = nil
+	return c.String()
 }
 
 // isChatCompletionsPath reports whether path is the OpenAI chat-completions

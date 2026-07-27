@@ -267,3 +267,65 @@ func TestIsChatCompletionsPath(t *testing.T) {
 		}
 	}
 }
+
+// TestRedactedUpstreamStripsUserinfo is the unit test for the redaction helper
+// used by both the error handler (proxy.go) and the startup log (main.go).
+// It covers the two leak shapes from fix-upstream-credentials-leaked-in-error-and-log:
+// a user:password upstream and a username-only API key (the case url.Redacted
+// leaves exposed).
+func TestRedactedUpstreamStripsUserinfo(t *testing.T) {
+	cases := map[string]string{
+		"http://user:secret@remote:8080": "http://remote:8080",
+		"http://sk-xxx@host":             "http://host", // username-only API key
+		"http://localhost:8080":          "http://localhost:8080", // no userinfo, unchanged
+	}
+	for raw, want := range cases {
+		got := RedactedUpstream(raw)
+		if got != want {
+			t.Errorf("RedactedUpstream(%q) = %q, want %q", raw, got, want)
+		}
+		if strings.Contains(got, "secret") {
+			t.Errorf("RedactedUpstream(%q) leaked password: %q", raw, got)
+		}
+		if strings.Contains(got, "sk-xxx") {
+			t.Errorf("RedactedUpstream(%q) leaked API key: %q", raw, got)
+		}
+	}
+}
+
+// TestErrorHandlerRedactsUpstreamCredentials is the end-to-end regression test
+// for fix-upstream-credentials-leaked-in-error-and-log at proxy.go:107. An
+// upstream configured with userinfo (http://user:secret@remote) must not leak
+// the credential into the 502 error body when the upstream is unreachable.
+// Before the fix, errorHandler formatted p.upstream verbatim with %s, and
+// url.URL.String() embeds User — so every 502 body carried the password.
+func TestErrorHandlerRedactsUpstreamCredentials(t *testing.T) {
+	// Port 1 has no listener, so the upstream connection fails and the 502
+	// error-handler body is what the client receives.
+	p, err := New("http://user:secret@127.0.0.1:1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(p)
+	defer front.Close()
+
+	resp, err := http.Get(front.URL + "/v1/chat/completions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d for unreachable upstream", resp.StatusCode, http.StatusBadGateway)
+	}
+	if strings.Contains(string(body), "secret") {
+		t.Errorf("502 body leaked upstream password: %q", string(body))
+	}
+	if strings.Contains(string(body), "user:secret") {
+		t.Errorf("502 body leaked upstream userinfo: %q", string(body))
+	}
+	// The redacted host must still be present so the error message stays useful.
+	if !strings.Contains(string(body), "127.0.0.1:1") {
+		t.Errorf("502 body should still name the upstream host; got %q", string(body))
+	}
+}
