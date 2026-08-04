@@ -117,6 +117,64 @@ func TestSessionIDStableAndDistinct(t *testing.T) {
 	}
 }
 
+// TestSessionIDStableAcrossSystemRerender is the regression test for
+// fix-session-id-forks-on-system-mutation: pre-v0.7.0 the id hashed the system
+// message + the first user message, so a coding harness re-rendering the system
+// prompt (context compaction, a tool-schema reorder embedded in the system
+// message) forked the session id. observeLocked then treated the re-rendered
+// request as a brand-new session — PrevLen=0, Mutated=false,
+// ReprocessedTokens=0, PreservedPrefixPct=100 — printing "prefix preserved
+// 100% | 0 tokens reprocessed" while the upstream actually invalidated its KV
+// cache at byte 0 and reprocessed the entire prefix (the exact
+// silent-green-while-reprocessing failure mode the v0.4.0/v0.6.0 warnings
+// targeted). Dropping the system bytes from the hash keeps a system-prompt
+// re-render in-session, so the tracker catches it as a content divergence at
+// msg[0] instead of a silent-green fork.
+func TestSessionIDStableAcrossSystemRerender(t *testing.T) {
+	// Two seeds differing ONLY in the system message, with the same first user
+	// message. The id must NOT fork — otherwise the system re-render is a new
+	// session and the silent-green path is reachable.
+	a := seed() // system "you are a coding agent", user "refactor the proxy package"
+	b := []openai.Message{
+		msg("system", "DIFFERENT re-rendered system prompt (tool schema reordered)"),
+		msg("user", "refactor the proxy package"), // same first user message
+	}
+	if SessionID(a) != SessionID(b) {
+		t.Errorf("session id forked on a system-prompt re-render (same first user message): a=%s b=%s", SessionID(a), SessionID(b))
+	}
+}
+
+// TestObserveSystemRerenderStaysInSessionAsMutation is the tracker-level
+// regression for fix-session-id-forks-on-system-mutation: when the id no longer
+// forks on a system re-render, the re-rendered request stays in-session and is
+// correctly caught as a content divergence at msg[0] (mutated=true,
+// reprocessed>0) rather than reported as a clean turn-1 / 100% preserved / 0
+// reprocessed. This is the path --pin also needs a real prior canonical for.
+func TestObserveSystemRerenderStaysInSessionAsMutation(t *testing.T) {
+	tr := NewTracker()
+	first := seed() // system "you are a coding agent", user "refactor the proxy package"
+	tr.Observe(first)
+
+	// The harness re-renders the system prompt (a new canonical msg[0]) and
+	// appends a new user turn. With the v0.7.0 id this is the SAME session.
+	rerender := []openai.Message{
+		msg("system", "DIFFERENT re-rendered system prompt"),
+		msg("user", "refactor the proxy package"),
+		msg("user", "a follow-up question"),
+	}
+	turn := tr.Observe(rerender)
+
+	if turn.TurnNum != 2 {
+		t.Errorf("system re-render should stay in-session as turn 2, got turn %d (id forked?)", turn.TurnNum)
+	}
+	if !turn.Mutated {
+		t.Errorf("system re-render should be caught as a content divergence at msg[0] (mutated=true), not silent green")
+	}
+	if turn.ReprocessedTokens <= 0 {
+		t.Errorf("system re-render reprocesses the prior prefix; got %d reprocessed, want > 0", turn.ReprocessedTokens)
+	}
+}
+
 func TestSeparateSessionsTrackedIndependently(t *testing.T) {
 	tr := NewTracker()
 	s1 := seed()

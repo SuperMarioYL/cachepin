@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 )
 
 // TestBuildProxyServesEndToEnd is the smoke test for fix-wire-proxy-into-main:
@@ -362,9 +363,9 @@ func TestBuildProxyPinWarnsOnEvictedSession(t *testing.T) {
 // startup fmt.Printf prints to stdout, which is the same sink as the per-turn
 // metrics log, so a raw --upstream with userinfo leaked the credential into
 // any captured stdout. With the fix, the startup line renders the upstream via
-// proxy.RedactedUpstream. The listen address uses an invalid port so
-// http.ListenAndServe fails immediately and run() returns right after the
-// startup line is printed (no real listener starts).
+// proxy.RedactedUpstream. The listen address uses an invalid port so the
+// server fails to start immediately and run() returns right after the startup
+// line is printed (no real listener starts).
 func TestStartupLogRedactsUpstreamCredentials(t *testing.T) {
 	old := os.Stdout
 	r, w, err := os.Pipe()
@@ -463,5 +464,39 @@ func TestBuildProxyPinSameSessionConcurrentNoTurnLoss(t *testing.T) {
 	}
 	if !strings.Contains(final, "\"FINAL\"") {
 		t.Errorf("final turn missing from upstream body: %s", final)
+	}
+}
+
+// TestHTTPServerHasSlowlorisTimeouts is the regression test for
+// fix-http-server-missing-timeouts: run() started the listener with the bare
+// http.ListenAndServe (main.go:106), which uses an http.Server with all
+// timeouts at their zero values — no ReadHeaderTimeout and no IdleTimeout — so
+// a slow / half-open client (or a harness connection left dangling after a
+// crash) held a server goroutine and an idle keep-alive connection
+// indefinitely, a slowloris resource-exhaustion vector for the shared/team
+// deployment posture DefaultMaxSessions targets (the LRU session cap bounds
+// in-memory state but does nothing for the unbounded connection / goroutine
+// count). newHTTPServer now sets ReadHeaderTimeout (10s) and IdleTimeout (60s)
+// while leaving WriteTimeout at zero so SSE /chat/completions streams are not
+// cut off mid-token. Verified without binding a real listener.
+func TestHTTPServerHasSlowlorisTimeouts(t *testing.T) {
+	srv := newHTTPServer(":0", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+
+	if srv.ReadHeaderTimeout != 10*time.Second {
+		t.Errorf("ReadHeaderTimeout = %v, want 10s (slowloris hardening)", srv.ReadHeaderTimeout)
+	}
+	if srv.IdleTimeout != 60*time.Second {
+		t.Errorf("IdleTimeout = %v, want 60s (reclaim idle keep-alive connections)", srv.IdleTimeout)
+	}
+	// WriteTimeout MUST stay zero so SSE streaming responses are not cut off
+	// mid-token — the whole point of leaving it at the zero value.
+	if srv.WriteTimeout != 0 {
+		t.Errorf("WriteTimeout = %v, want 0 (must not cut off SSE streams mid-token)", srv.WriteTimeout)
+	}
+	if srv.Addr != ":0" {
+		t.Errorf("Addr = %q, want :0", srv.Addr)
+	}
+	if srv.Handler == nil {
+		t.Error("Handler must be set to the proxy")
 	}
 }

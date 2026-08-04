@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <a href="https://github.com/SuperMarioYL/cachepin/releases"><img src="https://img.shields.io/badge/release-v0.4.0-6d28d9.svg" alt="release v0.4.0" /></a>
+  <a href="https://github.com/SuperMarioYL/cachepin/releases"><img src="https://img.shields.io/badge/release-v0.7.0-6d28d9.svg" alt="release v0.7.0" /></a>
   <a href="https://github.com/SuperMarioYL/cachepin/actions"><img src="https://img.shields.io/badge/CI-go%20build%20%2B%20test-success.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/go-1.24-00ADD8.svg" alt="Go 1.24" />
   <img src="https://img.shields.io/badge/KV%20Cache-pinned-6d28d9.svg" alt="KV Cache" />
@@ -18,6 +18,8 @@
 </p>
 
 > 一个单文件 Go 二进制，塞在你的 **Coding Agent** harness 和 OpenAI 兼容模型服务之间。它会量化——并在加上 `--pin` 后保护——那块被 harness 悄悄打掉的服务端 **KV Cache**。
+
+> **CachePin v0.7.0** —— `--pin` 现在能扛住 system prompt 的重渲染（harness 重渲染系统消息——重排工具 schema、压缩上下文——时，session-id 不再 fork，于是不再一边悄悄让上游整段重算、一边报「100% 保留 · 0 重处理」的静默绿灯）；代理也做了 slowloris 加固（`ReadHeaderTimeout`/`IdleTimeout`，慢连接或崩溃后悬挂的连接不再长期占用服务端 goroutine）。3 步快速开始见下。如果它能帮你省 token，欢迎在 GitHub 上点 ★ star。
 
 ## 为什么是现在
 
@@ -159,6 +161,9 @@ go run ./bench -turns 50 -out chart.csv
 - [x] **m4 — 上下文布局 linter** *(v0.2.0，v0.3.0 加深)*：字节级前缀 diff，点名打破前缀稳定性的确切偏移与字段。v0.3.0 让它的精确定位坐标始终在场（offset 0 / `msg[0]` 保留，无发散统一为 `-1`），每轮输出一致的字段集。
 - [x] **v0.3.0 加固**：让会话存储在多会话并发下不再崩溃，`--pin` 每轮指标与基准测试对齐，并用 LRU 会话淘汰（`--max-sessions`）限制内存。
 - [x] **v0.4.0 加固**：让 `--ndjson` 跨重启与多会话并发写入存活下来（追加模式 + 写互斥锁），在 `--pin` 覆盖被淘汰静默失效时显式告警（而非伪绿指标），并新增 `--idle-ttl` 让空闲会话即便没有新流量也能过期。
+- [x] **v0.5.0 加固**：空闲会话现在每一轮 `Observe` 都过期（不再只在新建会话时触发），`--pin` 的 Canonical→Reconcile→Observe 每请求原子化，同一会话的并发轮次不再被悄悄丢一条。
+- [x] **v0.6.0 加固**：从 502 错误响应和启动日志里抹掉 upstream URL 里的凭据（`RedactedUpstream`），`--upstream http://sk-xxx@host` 里的 API key 不再出现在 502 响应体或被捕获的 stdout 里。
+- [x] **v0.7.0 修复**：`--pin` 扛住 system prompt 重渲染——session-id 现在只取首条 user 消息，harness 重渲染系统提示（压缩上下文、重排工具 schema）不再 fork 会话、不再报「100% 保留 · 0 重处理」的静默绿灯，而是被 tracker 当作 `msg[0]` 的内容发散捕获，`--pin` 也拿到真实的前序 canonical 可供对齐。代理同时做了 slowloris 加固：显式 `http.Server` 设置 `ReadHeaderTimeout`/`IdleTimeout`（WriteTimeout 保持为 0，SSE 流不会被中途掐断）。
 - [ ] **未来**：harness ↔ server 的 append-only 上下文协议规范；生态文档链接。
 
 ## 参与贡献
@@ -172,5 +177,5 @@ MIT © 2026 SuperMarioYL
 ## 一句话分享
 
 ```
-CachePin —— 与 harness 无关的代理，让你的 Coding Agent 在多轮对话中保住 KV Cache。自建 llama.cpp/vLLM 每轮重算 3 万 token？把 OPENAI_BASE_URL 指过来。Go 写的，10 分钟即插即用。https://github.com/SuperMarioYL/cachepin
+CachePin v0.7.0 —— --pin 现在扛得住 system prompt 的重渲染（session-id 不再 fork），代理也做了 slowloris 加固（ReadHeaderTimeout/IdleTimeout）。与 harness 无关的 Go 代理，让你的 Coding Agent 在多轮对话中保住 KV Cache。自建 llama.cpp/vLLM 每轮重算 3 万 token？把 OPENAI_BASE_URL 指过来。10 分钟即插即用。https://github.com/SuperMarioYL/cachepin  ★ 能省 token 就点个 star。
 ```

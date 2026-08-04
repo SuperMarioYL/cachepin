@@ -4,6 +4,71 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-08-04
+
+This release folds two repo-verified correctness fixes (each cited at an exact
+file:line in the `_grill_v0.7.0/_bug_findings.yaml` sidecar) rather than
+widening scope. Both close a silent-green-while-reprocessing path reachable via
+scenarios the README itself advertises the linter pinpoints, and the proxy gets
+slowloris-hardened for the shared/team deployment posture. The launch hook also
+pivots from copy re-ordering (the v0.5.0 license-lead and v0.6.0 benchmark-lead
+both failed to close the clones-without-stars gap — clones widened 40 → 62 → 68
+with 0 organic stars across all 6 versions) to leading with these two
+substantive fixes, keeping the star CTA + 3-step quickstart.
+
+### Fixed
+
+- **`--pin` now survives system-prompt re-renders (session-id no longer
+  forks).** `SessionID` (`internal/session/tracker.go:404`) hashed the system
+  message plus the first user message, so when a coding harness re-rendered the
+  system prompt (context compaction, or a tool-schema reorder embedded in the
+  system message) the id changed and `observeLocked` treated it as a brand-new
+  session: `PrevLen=0` → `PreservedPrefixPct` stayed `100.0`,
+  `ReprocessedTokens=0`, `Mutated=false`, `Layout=NoDivergence`. CachePin printed
+  "prefix preserved 100% | 0 tokens reprocessed" while the upstream actually
+  invalidated its KV cache at byte 0 and reprocessed the entire prefix — the
+  exact silent-green-while-reprocessing failure mode the v0.4.0/v0.6.0 warnings
+  targeted. `--pin` was also defeated: `ReconcileAndObserve` ran with `prior=nil`
+  so the raw mutated request was forwarded unreconciled and `PinCoverageLost`
+  stayed false. `SessionID` now derives the id from the first USER message only
+  (falling back to the first message of any role when no user is present),
+  dropping the system bytes from the hash. A system-prompt re-render then stays
+  in-session and is correctly caught as a content divergence at `msg[0]`
+  (`mutated=true`, `reprocessed>0`, `layout_field=content` at byte 0), and pin
+  mode gets a real prior canonical to reconcile against. Existing `SessionID`
+  tests stay green (they key distinct sessions by the first-user text); the rare
+  same-first-user-different-system collision is an accepted tradeoff versus the
+  silent-green fork.
+
+- **The proxy is slowloris-hardened (`ReadHeaderTimeout`/`IdleTimeout`).** `run()`
+  started the listener with the bare `http.ListenAndServe(cfg.Listen, p)`
+  (`cmd/cachepin/main.go:106`), which uses an `http.Server` with all timeouts at
+  their zero values — no `ReadHeaderTimeout` and no `IdleTimeout` — so a slow or
+  half-open client (or a harness connection left dangling after a crash) held a
+  server goroutine and an idle keep-alive connection indefinitely. That is a
+  resource-exhaustion / slowloris vector for exactly the "shared/team
+  deployment" posture `DefaultMaxSessions` is written for: the LRU session cap
+  bounds in-memory state but does nothing for the unbounded connection /
+  goroutine count. The listener is now an explicit `http.Server` with
+  `ReadHeaderTimeout: 10s` and `IdleTimeout: 60s` (`WriteTimeout` left at zero
+  so SSE `/chat/completions` streams are not cut off mid-token); both timeouts
+  are safe for the streaming response path. Extracted as `newHTTPServer` so the
+  timeout contract is unit-testable without binding a real listener.
+
+## [0.6.0] - 2026-07-28
+
+### Fixed
+
+- **Upstream URL credentials are redacted from 502 error responses and the
+  startup log.** `errorHandler` formatted the upstream URL verbatim
+  (`internal/proxy/proxy.go:107`) and `run()` printed the raw `cfg.Upstream` at
+  startup (`cmd/cachepin/main.go:105`), so an operator running `cachepin
+  --upstream http://user:pass@remote-model:8080` (or an API key as the username,
+  `http://sk-xxx@host`) had the full credential written into the 502 response
+  body and any captured stdout. `url.Redacted()` only masks the password,
+  leaving a username-only API key exposed. Both sites now render the upstream via
+  `proxy.RedactedUpstream`, which drops `User` entirely.
+
 ## [0.5.0] - 2026-07-23
 
 This release folds two repo-verified correctness fixes into the v0.4.0

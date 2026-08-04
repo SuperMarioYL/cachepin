@@ -5,19 +5,19 @@
   "host": "cachepin.lei6393.com",
   "lang": { "primary": "zh", "toggle": true },
   "accent": ["#E11D48"],
-  "content_version": "v0.5.0",
+  "content_version": "v0.7.0",
   "hero": {
     "eyebrow": {
-      "zh": "钉住的前缀在并发下也不丢 · 空闲会话每轮都过期 · 日志重启不丢 · 长跑不涨内存",
-      "en": "Pinned prefixes hold under concurrency · Idle sessions expire every turn · Logs survive restarts · Long uptime stays bounded"
+      "zh": "v0.7.0：--pin 扛住 system prompt 重渲染 · session-id 不再 fork · 代理 slowloris 加固",
+      "en": "v0.7.0: --pin survives system-prompt re-renders · session-id no longer forks · proxy slowloris-hardened"
     },
     "headline": {
-      "zh": "钉住的前缀，在并发与驱逐下都不再悄悄失效\n它替你守住该守的缓存，并告诉你哪一份溜了",
-      "en": "Pinned prefixes no longer slip away — under concurrency or eviction\nIt holds the cache that should stay, and tells you which slipped"
+      "zh": "--pin 现在，连 system prompt 被重渲染都不再悄悄失效\n它守住该守的前缀，并指出是哪一条先发散",
+      "en": "--pin no longer slips when the system prompt is re-rendered\nIt holds the prefix that should stay, and pinpoints where it first diverged"
     },
     "sub": {
-      "zh": "一个单二进制，架在你的编码 Agent 和自托管模型服务之间。开启 --pin 后，无论某个会话被内存压力清走又回来，还是同一会话被并发投递的多轮请求，它都把该钉住的前缀守住、按调用顺序排好；--ndjson 日志追加写入、重启不丢；--idle-ttl 让空闲会话每一轮都过期——即便关掉会话数上限，长跑部署的内存也有界。",
-      "en": "A single binary you drop between your coding agent and your self-hosted model server. With --pin on, whether a session gets evicted under memory pressure and later returns, or multiple concurrent turns hit the same session, it holds the pinned prefix and keeps the order straight; the --ndjson log is append-only and survives restarts; and --idle-ttl expires idle sessions on every turn — so even with the session cap off, long-uptime memory stays bounded."
+      "zh": "一个单二进制，架在你的编码 Agent 和自托管模型服务之间。v0.7.0 之前，harness 重渲染系统提示（压缩上下文、重排工具 schema）会让 session-id 变化，代理把它当成全新会话、报「100% 保留 · 0 重处理」的静默绿灯，而上游其实从头重算整段前缀；--pin 也因拿不到前序 canonical 而放行原样请求。现在 session-id 只取首条 user 消息，重渲染留在同一会话内被当作 msg[0] 的内容发散捕获，--pin 也拿到真实前序可供对齐；代理同时加了 ReadHeaderTimeout/IdleTimeout，慢连接或崩溃后悬挂的连接不再长期占用服务端 goroutine。",
+      "en": "A single binary you drop between your coding agent and your self-hosted model server. Before v0.7.0, a harness re-rendering the system prompt (context compaction, a tool-schema reorder) changed the session-id, so the proxy treated it as a brand-new session and reported a silent-green '100% preserved | 0 reprocessed' while the upstream reprocessed the entire prefix from byte 0; --pin also forwarded the raw mutated request because it had no prior canonical. Now session-id is derived from the first user message only, so a system re-render stays in-session and is caught as a content divergence at msg[0], and --pin gets a real prior canonical to reconcile against; the proxy is also slowloris-hardened with ReadHeaderTimeout/IdleTimeout so a slow or dangling client can no longer hold a server goroutine forever."
     },
     "command": "cachepin --upstream http://localhost:8080 --pin --idle-ttl 1h",
     "cta": { "zh": "开始使用", "en": "Get started" },
@@ -95,6 +95,18 @@
     }
   },
   "changelog": [
+    {
+      "version": "v0.7.0",
+      "date": "2026-08-04",
+      "zh": [
+        "--pin 现在扛得住 system prompt 的重渲染——session-id 改为只取首条 user 消息，harness 重渲染系统提示（压缩上下文、重排工具 schema）不再 fork 会话、不再报「100% 保留 · 0 重处理」的静默绿灯，而是被当作 msg[0] 的内容发散捕获，--pin 也拿到真实前序 canonical 可供对齐。",
+        "代理做了 slowloris 加固——显式 http.Server 设置 ReadHeaderTimeout/IdleTimeout，慢连接或崩溃后悬挂的连接不再长期占用服务端 goroutine；WriteTimeout 保持为 0，SSE /chat/completions 流不会被中途掐断。"
+      ],
+      "en": [
+        "--pin now survives system-prompt re-renders — session-id is derived from the first user message only, so a harness re-rendering the system prompt (context compaction, a tool-schema reorder) no longer forks the session and reports a silent-green '100% preserved | 0 reprocessed' while the upstream reprocesses everything; it is now caught as a content divergence at msg[0], and --pin gets a real prior canonical to reconcile against.",
+        "The proxy is slowloris-hardened — an explicit http.Server sets ReadHeaderTimeout/IdleTimeout so a slow or dangling client can no longer hold a server goroutine forever; WriteTimeout stays at zero so SSE /chat/completions streams are not cut off mid-token."
+      ]
+    },
     {
       "version": "v0.5.0",
       "date": "2026-07-23",

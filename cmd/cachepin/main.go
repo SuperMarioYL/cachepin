@@ -103,7 +103,30 @@ func run(cfg Config) error {
 	}
 
 	fmt.Printf("cachepin listening on %s -> upstream %s (pin=%v, max-sessions=%d, idle-ttl=%s)\n", cfg.Listen, proxy.RedactedUpstream(cfg.Upstream), cfg.Pin, cfg.MaxSessions, cfg.IdleTTL)
-	return http.ListenAndServe(cfg.Listen, p)
+	return newHTTPServer(cfg.Listen, p).ListenAndServe()
+}
+
+// newHTTPServer builds the front-facing listener with hardening timeouts
+// (v0.7.0, fix-http-server-missing-timeouts). A bare http.ListenAndServe uses
+// an http.Server with all timeouts at their zero values — no
+// ReadHeaderTimeout and no IdleTimeout — so a slow / half-open client (or a
+// harness connection left dangling after a crash) holds a server goroutine and
+// an idle keep-alive connection indefinitely. That is a resource-exhaustion /
+// slowloris vector for exactly the "shared/team deployment" posture
+// DefaultMaxSessions is written for: the LRU session cap bounds in-memory
+// state but does nothing for the unbounded connection / goroutine count.
+// ReadHeaderTimeout neutralizes slow-header attacks and IdleTimeout reclaims
+// idle keep-alive connections; WriteTimeout is left at zero so SSE
+// /chat/completions streams are not cut off mid-token (both timeouts are safe
+// for the streaming path). Extracted so the timeout contract is unit-testable
+// without binding a real listener.
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
 }
 
 // openNDJSON opens the --ndjson sink in append mode (v0.4.0). os.Create would

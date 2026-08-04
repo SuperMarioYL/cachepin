@@ -23,8 +23,8 @@ import (
 // Turn is the per-request report the tracker produces. It is the input to the
 // metrics reporter and the benchmark.
 type Turn struct {
-	// SessionID identifies the conversation (derived from its system + first
-	// user message).
+	// SessionID identifies the conversation (derived from its first user
+	// message — stable across system-prompt re-renders; v0.7.0).
 	SessionID string
 	// TurnNum is the 1-based count of requests seen for this session.
 	TurnNum int
@@ -398,28 +398,45 @@ func LongestCommonPrefix(a, b []openai.Message) int {
 	return i
 }
 
-// SessionID derives a stable identifier from the conversation's system message
-// and first user message — the parts that anchor a session and rarely change.
-// Falls back to the first message when neither role is present.
+// SessionID derives a stable identifier from the conversation's first USER
+// message — the part that anchors a session and is stable across system-prompt
+// re-renders (context compaction, a tool-schema reorder embedded in the system
+// message). Falls back to the first message of any role when no user is present.
+//
+// v0.7.0 (fix-session-id-forks-on-system-mutation): the pre-v0.7.0 id hashed
+// the system message + the first user message, so a coding harness re-rendering
+// the system prompt forked the session id — observeLocked treated it as a
+// brand-new session (PrevLen=0 -> PreservedPrefixPct=100, Mutated=false,
+// ReprocessedTokens=0, Layout=NoDivergence) and printed "prefix preserved 100% |
+// 0 tokens reprocessed" while the upstream actually invalidated its KV cache at
+// byte 0 and reprocessed the entire prefix. That is the exact
+// silent-green-while-reprocessing failure mode the v0.4.0/v0.6.0 warnings
+// targeted, reachable via a scenario the README itself advertises the linter
+// pinpoints ("the system prompt" / "a re-ordered tool schema"). --pin was also
+// defeated: ReconcileAndObserve ran with prior=nil so the raw mutated request
+// was forwarded unreconciled and PinCoverageLost stayed false (no eviction).
+//
+// Dropping the system bytes from the hash keeps a system-prompt re-render
+// in-session, where the tracker and layout linter correctly catch it as a
+// content divergence at msg[0] (mutated=true, reprocessed>0,
+// layout_field=content at byte 0), and --pin gets a real prior canonical to
+// reconcile against. Existing SessionID tests stay green (they key distinct
+// sessions by the first-user text); the rare same-first-user-different-system
+// collision is an accepted tradeoff versus the silent-green fork.
 func SessionID(msgs []openai.Message) string {
 	h := sha256.New()
-	gotSystem, gotUser := false, false
+	gotUser := false
 	for _, m := range msgs {
-		if !gotSystem && m.Role == "system" {
-			h.Write([]byte("system\x00"))
-			h.Write(m.Content)
-			gotSystem = true
-		}
-		if !gotUser && m.Role == "user" {
+		if m.Role == "user" {
 			h.Write([]byte("user\x00"))
 			h.Write(m.Content)
 			gotUser = true
-		}
-		if gotSystem && gotUser {
 			break
 		}
 	}
-	if !gotSystem && !gotUser && len(msgs) > 0 {
+	if !gotUser && len(msgs) > 0 {
+		// No user message present: anchor on the first message of any role so the
+		// session is still identifiable and stable across later system re-renders.
 		h.Write(msgs[0].Content)
 	}
 	sum := h.Sum(nil)

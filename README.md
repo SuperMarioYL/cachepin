@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache License 2.0" /></a>
-  <a href="https://github.com/SuperMarioYL/cachepin/releases"><img src="https://img.shields.io/badge/release-v0.4.0-6d28d9.svg" alt="release v0.4.0" /></a>
+  <a href="https://github.com/SuperMarioYL/cachepin/releases"><img src="https://img.shields.io/badge/release-v0.7.0-6d28d9.svg" alt="release v0.7.0" /></a>
   <a href="https://github.com/SuperMarioYL/cachepin/actions"><img src="https://img.shields.io/badge/CI-go%20build%20%2B%20test-success.svg" alt="CI" /></a>
   <img src="https://img.shields.io/badge/go-1.24-00ADD8.svg" alt="Go 1.24" />
   <img src="https://img.shields.io/badge/KV%20Cache-pinned-6d28d9.svg" alt="KV Cache" />
@@ -18,6 +18,8 @@
 </p>
 
 > A single Go binary you drop between your **Coding Agent** harness and your OpenAI-compatible model server. It measures — and, with `--pin`, protects — the server-side **KV Cache** your harness keeps silently invalidating.
+
+> **CachePin v0.7.0** — `--pin` now survives system-prompt re-renders (session-id no longer forks when the harness re-renders the system message, so a tool-schema reorder or context compaction no longer reports silent-green `100% preserved | 0 reprocessed` while the upstream reprocesses everything), and the proxy is slowloris-hardened (`ReadHeaderTimeout`/`IdleTimeout` so a slow or dangling client can no longer hold a server goroutine forever). 3-step quickstart below. ★ [star on GitHub](https://github.com/SuperMarioYL/cachepin) if this would save you tokens.
 
 ## Why now
 
@@ -160,6 +162,9 @@ If you want a batteries-included agent, CodeWhale is the better answer. If you w
 - [x] **m4 — context-layout linter** *(v0.2.0, deepened v0.3.0)*: byte-level prefix diff that names the exact offset and field that broke prefix-stability. v0.3.0 makes its pinpoint coordinates always present (offset 0 / `msg[0]` preserved, no-divergence unified to `-1`) so every turn emits a consistent field set.
 - [x] **v0.3.0 hardening**: guard the session store against concurrent multi-session traffic, make `--pin` per-turn metrics match the benchmark, and bound memory with LRU session eviction (`--max-sessions`).
 - [x] **v0.4.0 hardening**: make `--ndjson` survive restarts and concurrent multi-session writes (append + a write mutex), warn when `--pin` coverage is voided by eviction instead of reporting silent-green metrics, and add `--idle-ttl` so idle sessions expire even without new traffic.
+- [x] **v0.5.0 hardening**: idle sessions now expire on every `Observe` (not only on new-session creation), and `--pin`'s Canonical→Reconcile→Observe is atomic per request so a same-session concurrent turn can no longer be silently dropped.
+- [x] **v0.6.0 hardening**: redact upstream URL credentials from 502 error responses and the startup log (`RedactedUpstream`), so an API key in `--upstream http://sk-xxx@host` never lands in a 502 body or captured stdout.
+- [x] **v0.7.0 fixes**: `--pin` survives system-prompt re-renders — session-id is now derived from the first user message only, so a harness re-rendering the system prompt (context compaction, a tool-schema reorder) no longer forks the session and reports silent-green `100% preserved | 0 reprocessed`; the tracker now catches it as a content divergence at `msg[0]` and `--pin` gets a real prior canonical to reconcile against. The proxy is also slowloris-hardened: an explicit `http.Server` sets `ReadHeaderTimeout`/`IdleTimeout` (WriteTimeout stays zero so SSE streams are not cut off mid-token).
 - [ ] **Future**: protocol spec for harness ↔ server append-only context; ecosystem docs links.
 
 ## Contributing
@@ -173,5 +178,5 @@ Apache-2.0 © 2026 SuperMarioYL
 ## Share this
 
 ```
-CachePin — the harness-neutral proxy that keeps your Coding Agent's KV Cache alive across turns. Self-hosting llama.cpp/vLLM and reprocessing 30k tokens every turn? Point OPENAI_BASE_URL at it. Go, 10-min drop-in. https://github.com/SuperMarioYL/cachepin
+CachePin v0.7.0 — --pin now survives system-prompt re-renders (session-id no longer forks) and the proxy is slowloris-hardened (ReadHeaderTimeout/IdleTimeout). The harness-neutral Go proxy that keeps your Coding Agent's KV Cache alive across turns. Self-hosting llama.cpp/vLLM and reprocessing 30k tokens every turn? Point OPENAI_BASE_URL at it. Go, 10-min drop-in. https://github.com/SuperMarioYL/cachepin  ★ star if it'd save you tokens.
 ```
