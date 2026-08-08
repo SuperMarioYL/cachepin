@@ -3,6 +3,7 @@ package metrics
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -225,3 +226,63 @@ func TestNDJSONPinCoverageLostField(t *testing.T) {
 		t.Errorf("human line missing the eviction warning: %q", HumanLine(turn))
 	}
 }
+
+// TestReportNDJSONSurvivesHumanWriteFailure covers
+// fix-ndjson-dropped-on-stdout-failure: Report used to return early on a human
+// (stdout) write error before reaching the NDJSON block, so a broken stdout
+// pipe (EPIPE — cachepin piped to a process that exits, or a log collector that
+// closes the fd) silently dropped every subsequent machine-readable record even
+// though the NDJSON sink itself was healthy. With the v0.8.0 decoupling, the
+// NDJSON write is attempted regardless of the human sink's outcome.
+func TestReportNDJSONSurvivesHumanWriteFailure(t *testing.T) {
+	var nd bytes.Buffer
+	human := &failingWriter{err: errors.New("broken pipe")}
+	r := NewReporter(human, &nd)
+	r.now = func() time.Time { return time.Unix(1750000000, 0).UTC() }
+
+	turn := session.Turn{SessionID: "s1", TurnNum: 1}
+	if err := r.Report(turn); err == nil {
+		t.Fatal("Report: expected an error from the failing human sink, got nil")
+	} else if !strings.Contains(err.Error(), "human") {
+		t.Errorf("error %q does not mention the human sink", err.Error())
+	}
+
+	out := strings.TrimSpace(nd.String())
+	if out == "" {
+		t.Fatal("NDJSON record dropped when the human sink failed")
+	}
+	var rec map[string]any
+	if err := json.Unmarshal([]byte(out), &rec); err != nil {
+		t.Fatalf("NDJSON line not valid JSON after a human-write failure: %q (err %v)", out, err)
+	}
+	if rec["session_id"] != "s1" {
+		t.Errorf("NDJSON session_id = %v, want s1", rec["session_id"])
+	}
+	if rec["turn"] != float64(1) {
+		t.Errorf("NDJSON turn = %v, want 1", rec["turn"])
+	}
+}
+
+// TestReportBothSinkErrorsSurface confirms that when BOTH sinks fail, Report
+// still attempted the NDJSON write (did not short-circuit) and returns an error
+// covering both sinks.
+func TestReportBothSinkErrorsSurface(t *testing.T) {
+	human := &failingWriter{err: errors.New("human broken")}
+	nd := &failingWriter{err: errors.New("nd broken")}
+	r := NewReporter(human, nd)
+	r.now = func() time.Time { return time.Unix(1750000000, 0).UTC() }
+
+	err := r.Report(session.Turn{SessionID: "s1", TurnNum: 1})
+	if err == nil {
+		t.Fatal("Report: expected an error when both sinks fail, got nil")
+	}
+	if !strings.Contains(err.Error(), "human") || !strings.Contains(err.Error(), "nd") {
+		t.Errorf("error %q should mention both sinks", err.Error())
+	}
+}
+
+// failingWriter is an io.Writer that always errors, simulating a closed stdout
+// pipe (EPIPE) when cachepin is piped to a process that exits.
+type failingWriter struct{ err error }
+
+func (w *failingWriter) Write(p []byte) (int, error) { return 0, w.err }

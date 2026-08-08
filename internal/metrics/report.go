@@ -5,6 +5,7 @@ package metrics
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"strconv"
@@ -73,9 +74,17 @@ type record struct {
 func (r *Reporter) Report(t session.Turn) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	// Decouple the sinks (v0.8.0, fix-ndjson-dropped-on-stdout-failure): a
+	// broken stdout pipe (EPIPE — cachepin piped to a process that exits, or a
+	// log collector that closes the fd) used to make Report return early after
+	// the human write failed, before reaching the NDJSON block, silently
+	// dropping every subsequent machine-readable record even though the NDJSON
+	// sink itself was healthy. Attempt the NDJSON write regardless of the human
+	// sink's outcome, then surface any errors once both sinks have been tried.
+	var errs []error
 	if r.human != nil {
 		if _, err := fmt.Fprintln(r.human, HumanLine(t)); err != nil {
-			return fmt.Errorf("metrics: write human line: %w", err)
+			errs = append(errs, fmt.Errorf("write human line: %w", err))
 		}
 	}
 	if r.nd != nil {
@@ -99,13 +108,19 @@ func (r *Reporter) Report(t session.Turn) error {
 		}
 		b, err := json.Marshal(rec)
 		if err != nil {
-			return fmt.Errorf("metrics: marshal ndjson: %w", err)
-		}
-		if _, err := fmt.Fprintln(r.nd, string(b)); err != nil {
-			return fmt.Errorf("metrics: write ndjson: %w", err)
+			errs = append(errs, fmt.Errorf("marshal ndjson: %w", err))
+		} else if _, err := fmt.Fprintln(r.nd, string(b)); err != nil {
+			errs = append(errs, fmt.Errorf("write ndjson: %w", err))
 		}
 	}
-	return nil
+	switch len(errs) {
+	case 0:
+		return nil
+	case 1:
+		return fmt.Errorf("metrics: %w", errs[0])
+	default:
+		return fmt.Errorf("metrics: %w", errors.Join(errs...))
+	}
 }
 
 // HumanLine renders the terminal summary, e.g.

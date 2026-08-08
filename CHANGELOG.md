@@ -4,6 +4,70 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-08-09
+
+This release folds two repo-verified correctness fixes (each cited at an exact
+file:line) rather than widening scope. The headline fix is a faithfulness fix to
+the `--pin` reconcile re-marshal: it no longer strips `cache_control` (and other
+unmodeled per-message fields) from the body forwarded upstream — dropping
+`cache_control` defeats the upstream's own prompt-caching breakpoint, the
+opposite of cachepin's mission. The second decouples the metrics sinks so a
+broken stdout pipe can no longer silently drop the machine-readable NDJSON feed.
+Both come out of an autonomous bug-hunt; with 0 open GitHub issues
+(cold-start), v0.8.0 stays bug-hunt + plan-deferral anchored, no new breadth.
+
+### Fixed
+
+- **`--pin` no longer strips `cache_control` (and other unmodeled per-message
+  fields) from the upstream body; the reconcile re-marshal is now faithful.**
+  The `Message` struct (`internal/openai/messages.go:21`) modeled only
+  `role`/`content`/`name`/`tool_calls`/`tool_call_id`, so `ParseChatRequest`
+  dropped every other per-message field when unmarshaling into the struct. Under
+  `--pin`, when a turn was reconciled (`changed=true`), the interceptor
+  (`cmd/cachepin/main.go:197-204`) called `req.SetMessages(reconciled)` then
+  `req.Marshal()`, re-serializing from the already-stripped structs, so
+  `cache_control`, legacy `function_call`, and any provider-specific per-message
+  field were silently stripped from the body forwarded upstream. Dropping
+  `cache_control` can disable the upstream's own prompt-caching breakpoint. `Message`
+  now carries unmodeled per-message fields in a passthrough (a raw
+  `map[string]json.RawMessage` preserved on parse and re-emitted on `Marshal`),
+  mirroring how `ChatRequest` already preserves unknown top-level fields. `Hash`
+  stays keyed on the modeled content fields so `LongestCommonPrefix` /
+  prefix-diffing is unchanged, and the modeled fields still serialize in
+  declaration order so the byte-level linter's `wireBytes` is unchanged for
+  messages without unknown fields.
+
+- **The NDJSON record is now written independent of the human/stdout sink.**
+  `metrics.Reporter.Report` returned early on a human (stdout) write error
+  (`internal/metrics/report.go:77`) before reaching the NDJSON block, so a broken
+  stdout pipe (EPIPE — cachepin piped to a process that exits, or a log collector
+  that closes the fd) silently dropped every subsequent NDJSON record even though
+  the NDJSON sink itself was healthy. The interceptor logged the error to stderr
+  (`cmd/cachepin/main.go:205-207`, `216-218`), so it was not fully silent, but
+  the machine-readable feed a dashboard/benchmark consumes stopped recording. The
+  sinks are now decoupled: the NDJSON write is attempted regardless of the human
+  sink's outcome, and any errors from both sinks are surfaced only after both
+  have been tried.
+
+### Tests
+
+- `TestMessageRoundTripPreservesUnknownFields` — a message with `cache_control`
+  and `function_call` round-trips through the `--pin` reconcile re-marshal
+  (`SetMessages` + `Marshal`) intact.
+- `TestMessageMarshalKnownFieldsUnchanged` — the modeled fields still serialize
+  byte-identically in declaration order (no regression to the linter's
+  `wireBytes` / `layout_byte_offset`).
+- `TestMessageHashIgnoresUnknownFields` — unmodeled fields do not leak into
+  `Hash`, so prefix-diffing is unchanged.
+- `TestReportNDJSONSurvivesHumanWriteFailure` — a failing human writer does not
+  drop the NDJSON record.
+- `TestReportBothSinkErrorsSurface` — when both sinks fail, both errors surface
+  and the NDJSON write was still attempted.
+
+Full suite green: `go build ./...`, `go vet ./...`, `go test -count=1 ./...`,
+and `go test -race -count=1 ./...` all pass — 58 tests (53 prior + 5 new), 0
+failed, across 6 packages.
+
 ## [0.7.0] - 2026-08-04
 
 This release folds two repo-verified correctness fixes (each cited at an exact
