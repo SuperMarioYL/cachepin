@@ -531,3 +531,97 @@ func TestReconcileAndObserveSurfacesEvictionCoverageLoss(t *testing.T) {
 		t.Errorf("ReconcileAndObserve should set PinCoverageLost when prior was nil because the session was evicted")
 	}
 }
+
+// msgsFromJSON parses a JSON messages array into []openai.Message, preserving
+// unmodeled per-message fields (cache_control, ...) in each Message's raw. Used
+// by the raw-passthrough regression tests, which need messages that carry raw
+// fields the package-private msg() helper cannot construct.
+func msgsFromJSON(t *testing.T, messagesJSON string) []openai.Message {
+	t.Helper()
+	req, err := openai.ParseChatRequest([]byte(`{"messages":` + messagesJSON + `}`))
+	if err != nil {
+		t.Fatalf("ParseChatRequest: %v", err)
+	}
+	return req.Messages
+}
+
+// TestObserveRawFieldChangeIsMutation is the tracker-level regression for
+// fix-hash-ignores-raw-message-fields: when a harness changes cache_control on
+// the system message between turns while keeping role/content identical, the
+// upstream prefix cache breaks at msg[0] (it keys on wire bytes, which include
+// cache_control via MarshalJSON). Before the fix Hash excluded raw, so
+// LongestCommonPrefix counted msg[0] as matching and Observe reported
+// Mutated=false / ReprocessedTokens=0 / PreservedPrefixPct=100 — the
+// silent-green-while-reprocessing failure v0.4.0/v0.6.0/v0.7.0 targeted, now
+// reachable via a real cache_control change. With raw folded into Hash, Observe
+// catches it as a content divergence at msg[0]. (The byte-level Layout linter
+// already flagged it as field-order; the fix makes the message-level metrics
+// agree instead of contradicting it.)
+func TestObserveRawFieldChangeIsMutation(t *testing.T) {
+	tr := NewTracker()
+	// Turn 1: system message carries cache_control {"type":"ephemeral"}.
+	first := msgsFromJSON(t, `[{"role":"system","content":"s","cache_control":{"type":"ephemeral"}},{"role":"user","content":"u"}]`)
+	tr.Observe(first)
+
+	// Turn 2: same role/content on the system message, but cache_control gained a
+	// ttl field; a new assistant turn is appended. The first USER message ("u")
+	// is unchanged, so the session id stays the same (in-session, TurnNum=2).
+	second := msgsFromJSON(t, `[{"role":"system","content":"s","cache_control":{"type":"ephemeral","ttl":"5m"}},{"role":"user","content":"u"},{"role":"assistant","content":"a"}]`)
+	turn := tr.Observe(second)
+
+	if turn.TurnNum != 2 {
+		t.Errorf("cache_control change should stay in-session as turn 2 (same first user message), got turn %d (id forked?)", turn.TurnNum)
+	}
+	if !turn.Mutated {
+		t.Errorf("cache_control change on msg[0] should be detected as a mutation (raw now folds into Hash); got Mutated=false (silent green)")
+	}
+	if turn.LCP != 0 {
+		t.Errorf("LCP = %d, want 0 (cache_control change breaks the prefix at msg[0])", turn.LCP)
+	}
+	if turn.ReprocessedTokens <= 0 {
+		t.Errorf("cache_control change should reprocess the prior prefix; got %d reprocessed, want > 0", turn.ReprocessedTokens)
+	}
+	if turn.PreservedPrefixPct == 100 {
+		t.Errorf("PreservedPrefixPct = 100 (silent green); want < 100 after a cache_control break at msg[0]")
+	}
+	if !turn.Layout.Diverged {
+		t.Errorf("Layout should flag the cache_control change at msg[0] (field-order); got no divergence")
+	}
+}
+
+// TestEvictedSetSurvivesTrivialChurnUnderSmallMaxSessions is the regression
+// test for fix-evicted-set-ages-out-under-small-max-sessions: evictedCap was
+// bound to --max-sessions, so under --max-sessions 1 with trivial churn
+// (sessions A -> B -> C), recording C aged A out of the size-1 evicted set;
+// when A returned, ReconcileAndObserve set PinCoverageLost=false despite A's
+// canonical having been evicted. The v0.4.0 warning that exists to surface the
+// silent-green-while-reprocessing case was defeated under exactly the small cap
+// --max-sessions is tuned for. evictedCap is now decoupled from max-sessions
+// (floored at 16, scaled 2x), so a 3-session churn no longer ages A out.
+func TestEvictedSetSurvivesTrivialChurnUnderSmallMaxSessions(t *testing.T) {
+	tr := NewTrackerWithMax(1) // the small-cap config --max-sessions is tuned for
+	mA, idA := sessionN(0)
+	mB, _ := sessionN(1)
+	mC, _ := sessionN(2)
+
+	tr.Observe(mA) // A live; evicted={}
+	tr.Observe(mB) // cap 1 -> evict A; evicted={A}
+	tr.Observe(mC) // cap 1 -> evict B; before the fix evictedCap=1 so A aged out
+
+	// A returns under --pin with a mutated tail. Its canonical WAS evicted, so
+	// pin cannot reconcile and PinCoverageLost must be true. Before the fix
+	// evictedCap tracked max-sessions, so under --max-sessions 1 the size-1
+	// evicted set had aged A out and PinCoverageLost was falsely false.
+	incoming := append(append([]openai.Message{}, mA...), msg("user", "after-eviction"))
+	turn := tr.ReconcileAndObserve(idA, incoming, func(prior []openai.Message) ([]openai.Message, bool) {
+		return appendReconcile(prior, incoming)
+	})
+	if !turn.PinCoverageLost {
+		t.Errorf("returning session A's canonical was evicted; PinCoverageLost should be true, got false (evicted set aged A out under --max-sessions 1)")
+	}
+	// Sanity: the churn left exactly one live session (C evicted A when A
+	// returned under the size-1 cap).
+	if tr.Len() != 1 {
+		t.Errorf("post-churn Len = %d, want 1 (only the returning session live)", tr.Len())
+	}
+}

@@ -4,6 +4,101 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-08-25
+
+This release folds three repo-verified correctness fixes (each cited at an
+exact file:line) rather than widening scope. Two complete the v0.8.0
+`cache_control`-faithfulness mission the v0.8.0 re-marshal surface opened up:
+`Message.Hash` now sees the passthrough fields the wire form carries, and the
+`--pin` re-marshal preserves the harness's top-level field order instead of
+alphabetizing it. The third restores the v0.4.0 eviction warning under exactly
+the small `--max-sessions` it was tuned for. All three came out of an
+autonomous bug-hunt; with 0 open GitHub issues (cold-start), v0.9.0 stays
+bug-hunt + plan-deferral anchored, no new breadth.
+
+### Fixed
+
+- **`Message.Hash` now includes unmodeled per-message fields (`cache_control`,
+  legacy `function_call`, provider extensions), so a `cache_control`
+  toggle/change on an early message is detected as a cache break.** `Hash`
+  (`internal/openai/messages.go:147`) was keyed only on the modeled
+  `role`/`content`/`name`/`tool_calls`/`tool_call_id`, deliberately excluding
+  the v0.8.0 passthrough `raw` map. But the upstream prefix cache keys on the
+  full wire bytes, which DO include `raw` via `MarshalJSON`
+  (`internal/openai/linter.go:99-107`). So when a harness changed
+  `cache_control` on a message between turns (e.g.
+  `{"type":"ephemeral"}` -> `{"type":"ephemeral","ttl":"5m"}`) while keeping
+  `role`/`content` identical, `LongestCommonPrefix` counted the message as
+  matching, the `Turn` reported `Mutated=false` / `ReprocessedTokens=0` /
+  `PreservedPrefixPct=100`, and `pin.Reconcile` returned the incoming
+  `UNCHANGED` — `--pin` forwarded the raw-field change verbatim, the upstream
+  KV cache broke at that message and reprocessed the whole prefix while
+  cachepin reported green (the byte-level `LintLayout` already flagged it as
+  `field-order`, so the turn carried contradictory metrics). `Hash` now folds a
+  sorted-keys representation of `m.raw` into the digest (key + `\x00` +
+  raw bytes per field), mirroring `MarshalJSON`'s deterministic ordering, so any
+  raw-field change mutates the hash and triggers reconciliation.
+
+- **The `--pin` re-marshal now preserves the harness's original top-level field
+  order, so the reconciled body stays byte-faithful to the verbatim turn-1
+  body.** Under `--pin`, when a turn was reconciled (`changed=true`), the
+  interceptor (`cmd/cachepin/main.go:197-204`) called `req.SetMessages
+  (reconciled)` then `req.Marshal()`. `ChatRequest.Marshal`
+  (`internal/openai/messages.go:221-248`) built a
+  `map[string]json.RawMessage` and `json.Marshal(out)` serialized it with KEYS
+  SORTED ALPHABETICALLY — so a harness body sent as
+  `{"model":...,"messages":[...],"stream":...}` was re-emitted as
+  `{"messages":[...],"model":...,"stream":...}`. Turn 1 (no prior canonical) is
+  forwarded VERBATIM (harness field order); the first reconciled turn was
+  re-marshaled (sorted order). The two bodies diverged at byte 3 (`'o'` from
+  `"model"` vs `'e'` from `"messages"`), so the upstream prefix cache — which
+  keys on the request body bytes — broke at the very start and reprocessed the
+  entire history, the opposite of `--pin`'s purpose, while the tracker reported
+  ~0 reprocessed (`Hash` is order-independent). `ChatRequest` now captures the
+  original top-level key order in `ParseChatRequest` (a `[]string` alongside
+  `raw`, populated via a streaming decoder) and `Marshal` emits in that order
+  instead of via a map; modeled fields (`messages`/`model`/`stream`) are still
+  re-marshaled to reflect the current state, and every other field is carried
+  verbatim in its original position.
+
+- **The pin-coverage evicted set is now sized independently of
+  `--max-sessions`, so the eviction warning survives trivial churn under small
+  configs.** `NewTrackerWithMaxTTL` (`internal/session/tracker.go:133-147`) set
+  `evictedCap = max`, and `recordEvicted` (`internal/session/tracker.go:373-384`)
+  dropped an arbitrary entry once the set was at cap. Under `--max-sessions 1`
+  (the exact small-cap config `--pin` targets) with trivial churn — session A
+  observed, then B (evicts A), then C (evicts B, and recording C aged A out of
+  the size-1 evicted set) — when A returned, `ReconcileAndObserve` computed
+  `coverageLost = prior==nil && wasEvicted`, but `wasEvicted` was false because
+  A was no longer in the evicted set. So `PinCoverageLost` was false even
+  though A's canonical WAS evicted and `--pin` forwarded A's mutated request
+  unreconciled — the v0.4.0 warning that exists to surface the
+  silent-green-while-reprocessing case was defeated under exactly the small cap
+  `--max-sessions` is tuned for. `evictedCap` is now floored at 16 and scaled
+  2x with the live cap, so a small `--max-sessions` no longer shrinks the
+  warning set to uselessness.
+
+### Tests
+
+- `TestMessageHashIncludesRawPassthrough` — a `cache_control` field (and a
+  change to its value) mutates `Hash`; the digest is stable across map
+  iteration order. (Flips the pre-v0.9.0 `TestMessageHashIgnoresUnknownFields`
+  assertion, which encoded the bug.)
+- `TestObserveRawFieldChangeIsMutation` — a `cache_control` change on the
+  system message between turns is caught as `Mutated=true` / `Reprocessed>0` /
+  `PreservedPrefixPct<100` (no longer silent green), in-session as turn 2.
+- `TestMarshalPreservesTopLevelFieldOrder` — a `SetMessages`+`Marshal`
+  round-trip is byte-identical to the harness's original (non-alphabetical)
+  body; `TestMarshalPreservesReorderedTopLevelFields` covers an
+  anti-alphabetical order.
+- `TestEvictedSetSurvivesTrivialChurnUnderSmallMaxSessions` — under
+  `--max-sessions 1`, an A -> B -> C -> A churn keeps `PinCoverageLost=true`
+  when A returns (the evicted set no longer ages A out).
+
+Full suite green: `go build ./...`, `go vet ./...`, `go test -count=1 ./...`,
+and `go test -race -count=1 ./...` all pass — 62 tests (58 prior + 4 new), 0
+failed, across 6 packages.
+
 ## [0.8.0] - 2026-08-09
 
 This release folds two repo-verified correctness fixes (each cited at an exact

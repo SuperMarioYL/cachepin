@@ -135,13 +135,28 @@ func NewTrackerWithMaxTTL(max int, idleTTL time.Duration) *Tracker {
 	if cap <= 0 {
 		cap = DefaultMaxSessions
 	}
+	// The evicted set is sized INDEPENDENTLY of the live-session cap so a small
+	// --max-sessions does not shrink the --pin warning set to uselessness: under
+	// --max-sessions 1, trivial churn (sessions A -> B -> C) aged an evicted
+	// session out of a size-1 evicted set, so when A returned
+	// ReconcileAndObserve reported PinCoverageLost=false even though A's canonical
+	// WAS evicted and --pin forwarded A's mutated request unreconciled (v0.9.0,
+	// fix-evicted-set-ages-out-under-small-max-sessions). Floor the set at 16 and
+	// scale it with the live cap (2x) so it remembers at least twice as many
+	// evicted sessions as it ever holds live. (Written by hand rather than as
+	// max(cap*2, 16) because the `max` parameter shadows the builtin within this
+	// function.)
+	evictedCap := cap * 2
+	if evictedCap < 16 {
+		evictedCap = 16
+	}
 	return &Tracker{
 		sessions:    make(map[string]*Session),
 		order:       list.New(),
 		maxSessions: max,
 		idleTTL:     idleTTL,
 		evicted:     make(map[string]struct{}),
-		evictedCap:  cap,
+		evictedCap:  evictedCap,
 		now:         time.Now,
 	}
 }
