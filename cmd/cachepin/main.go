@@ -18,6 +18,7 @@ import (
 	"os"
 	"time"
 
+	"github.com/SuperMarioYL/cachepin"
 	"github.com/SuperMarioYL/cachepin/internal/metrics"
 	"github.com/SuperMarioYL/cachepin/internal/openai"
 	"github.com/SuperMarioYL/cachepin/internal/pin"
@@ -49,6 +50,9 @@ type Config struct {
 	// memory bounded even when no new sessions arrive to push idle ones out
 	// under the LRU count cap (v0.4.0). 0 disables idle expiry.
 	IdleTTL time.Duration
+	// ShowVersion, set by --version, prints the embedded version and exits
+	// instead of starting the proxy (v0.10.0, fix-cli-missing-version-surface).
+	ShowVersion bool
 }
 
 func main() {
@@ -58,10 +62,25 @@ func main() {
 		os.Exit(2)
 	}
 
+	if cfg.ShowVersion {
+		writeVersion(os.Stdout)
+		return
+	}
+
 	if err := run(cfg); err != nil {
 		fmt.Fprintln(os.Stderr, "cachepin:", err)
 		os.Exit(1)
 	}
+}
+
+// writeVersion prints the embedded build version — the single source of truth
+// shared with the VERSION file, web/site.json content_version, and the
+// CHANGELOG head (see the version package). Extracted so a test can assert the
+// --version output without spawning a process. v0.10.0,
+// fix-cli-missing-version-surface: .goreleaser.yaml injected -X main.version
+// but package main had no such symbol, so the flag never existed.
+func writeVersion(w io.Writer) {
+	fmt.Fprintln(w, version.Version)
 }
 
 func parseFlags(args []string) (Config, error) {
@@ -73,11 +92,14 @@ func parseFlags(args []string) (Config, error) {
 	fs.StringVar(&cfg.NDJSON, "ndjson", "", "optional path to write per-turn metrics as NDJSON")
 	fs.IntVar(&cfg.MaxSessions, "max-sessions", session.DefaultMaxSessions, "cap on tracked sessions; the least-recently-used session is evicted past it (0 = unbounded)")
 	fs.DurationVar(&cfg.IdleTTL, "idle-ttl", 0, "evict sessions whose last turn is older than this (e.g. 10m, 1h); 0 disables idle expiry and keeps only the --max-sessions count cap")
+	fs.BoolVar(&cfg.ShowVersion, "version", false, "print the cachepin version and exit")
 
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
-	if cfg.Upstream == "" {
+	// --version is honored without --upstream so `cachepin --version` works
+	// standalone; any other invocation requires an upstream to serve.
+	if cfg.Upstream == "" && !cfg.ShowVersion {
 		return Config{}, fmt.Errorf("--upstream is required (e.g. --upstream http://localhost:8080)")
 	}
 	return cfg, nil

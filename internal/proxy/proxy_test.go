@@ -276,7 +276,7 @@ func TestIsChatCompletionsPath(t *testing.T) {
 func TestRedactedUpstreamStripsUserinfo(t *testing.T) {
 	cases := map[string]string{
 		"http://user:secret@remote:8080": "http://remote:8080",
-		"http://sk-xxx@host":             "http://host", // username-only API key
+		"http://sk-xxx@host":             "http://host",           // username-only API key
 		"http://localhost:8080":          "http://localhost:8080", // no userinfo, unchanged
 	}
 	for raw, want := range cases {
