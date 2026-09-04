@@ -4,6 +4,38 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.10.0] - 2026-09-04
+
+This release fixes the version-drift bug class: the shipped code's version
+surfaces were out of lockstep and the drift was unguarded, so two consecutive
+releases (v0.8.0, v0.9.0) shipped with the live marketing site frozen at an
+older version. With 0 open GitHub issues (cold-start), v0.10.0 stays
+bug-hunt + version-drift anchored, no new breadth.
+
+### Fixed
+
+- **`web/site.json` `content_version` now tracks the shipped tag.** On the
+  v0.9.0 tag `content_version` was `"v0.7.0"` — two minors behind — while
+  `VERSION` = `0.9.0` and the `CHANGELOG.md` head = `[0.9.0]`. Neither the
+  v0.8.0 nor the v0.9.0 release refreshed it, and no test caught the drift.
+  `content_version` is now bumped to the shipped version in the no-`v`-prefix
+  format `VERSION` and the `CHANGELOG` head already use (`"0.10.0"`), the
+  hero eyebrow and on-site changelog are refreshed so the rebuilt site is
+  internally consistent, and a version-lockstep test
+  (`version_test.go`) asserts `VERSION` == `web/site.json` `content_version`
+  == `CHANGELOG.md` head == the embedded `version.Version`. The test fails on
+  the v0.9.0 tag (proving the drift was real).
+
+- **`cachepin --version` now works; the release binary carries a real
+  version.** `.goreleaser.yaml` injected the version via
+  `-X main.version={{.Version}}`, but package `main` declared no `version`
+  symbol and registered no `--version` flag, so the linker flag was a silent
+  no-op (Go ignores `-X` on an absent symbol) and the release binary had no
+  version surface — `cachepin --version` was an unknown flag. A root `version`
+  package now `//go:embed`s the `VERSION` file as the single source of truth
+  the binary embeds (independent of link-time injection), `cachepin --version`
+  prints it, and the dead `-X main.version` ldflag is dropped.
+
 ## [0.9.0] - 2026-08-25
 
 This release folds three repo-verified correctness fixes (each cited at an

@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/SuperMarioYL/cachepin"
 )
 
 // TestBuildProxyServesEndToEnd is the smoke test for fix-wire-proxy-into-main:
@@ -498,5 +500,49 @@ func TestHTTPServerHasSlowlorisTimeouts(t *testing.T) {
 	}
 	if srv.Handler == nil {
 		t.Error("Handler must be set to the proxy")
+	}
+}
+
+// TestVersionFlagStandaloneWorks is the regression test for
+// fix-cli-missing-version-surface: .goreleaser.yaml injected
+// `-X main.version={{.Version}}` but package main declared no `version` symbol
+// and registered no --version flag, so the ldflag was a silent no-op (Go
+// ignores -X on an absent symbol) and `cachepin --version` was an unknown flag.
+// parseFlags now honors --version without requiring --upstream, and the binary
+// reports the embedded version (the same value the lockstep test asserts).
+func TestVersionFlagStandaloneWorks(t *testing.T) {
+	cfg, err := parseFlags([]string{"--version"})
+	if err != nil {
+		t.Fatalf("parseFlags(--version) returned error: %v (the flag must be honored without --upstream)", err)
+	}
+	if !cfg.ShowVersion {
+		t.Errorf("ShowVersion = false, want true for --version")
+	}
+	if cfg.Upstream != "" {
+		t.Errorf("Upstream = %q, want empty (version must not require an upstream)", cfg.Upstream)
+	}
+}
+
+// TestVersionFlagDoesNotRequireUpstream guards the required-check adjustment:
+// any invocation without --version still requires --upstream, but --version is
+// the one standalone exception.
+func TestVersionFlagDoesNotRequireUpstream(t *testing.T) {
+	if _, err := parseFlags([]string{}); err == nil {
+		t.Errorf("parseFlags() = nil error, want --upstream-required error without --version")
+	}
+}
+
+// TestWriteVersionPrintsEmbeddedVersion verifies the --version output is the
+// single-source-of-truth embedded version (version.Version), so the CLI
+// surface the lockstep test guards is the value the binary actually prints.
+func TestWriteVersionPrintsEmbeddedVersion(t *testing.T) {
+	var buf bytes.Buffer
+	writeVersion(&buf)
+	want := version.Version + "\n"
+	if buf.String() != want {
+		t.Errorf("writeVersion = %q, want %q (embedded version.Version)", buf.String(), want)
+	}
+	if version.Version == "" {
+		t.Errorf("version.Version is empty; the embed did not populate the version")
 	}
 }

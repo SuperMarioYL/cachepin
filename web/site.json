@@ -5,11 +5,11 @@
   "host": "cachepin.lei6393.com",
   "lang": { "primary": "zh", "toggle": true },
   "accent": ["#E11D48"],
-  "content_version": "v0.7.0",
+  "content_version": "0.10.0",
   "hero": {
     "eyebrow": {
-      "zh": "v0.7.0：--pin 扛住 system prompt 重渲染 · session-id 不再 fork · 代理 slowloris 加固",
-      "en": "v0.7.0: --pin survives system-prompt re-renders · session-id no longer forks · proxy slowloris-hardened"
+      "zh": "v0.10.0：版本面同源锁步 — content_version / VERSION / CHANGELOG / --version 不再漂移，站点与发版同步；`cachepin --version` 真正可用",
+      "en": "v0.10.0: version surfaces in lockstep — content_version / VERSION / CHANGELOG / --version no longer drift; the site tracks the release and `cachepin --version` actually works"
     },
     "headline": {
       "zh": "--pin 现在，连 system prompt 被重渲染都不再悄悄失效\n它守住该守的前缀，并指出是哪一条先发散",
@@ -95,6 +95,18 @@
     }
   },
   "changelog": [
+    {
+      "version": "v0.10.0",
+      "date": "2026-09-04",
+      "zh": [
+        "版本面同源锁步：web/site.json 的 content_version 此前停在 v0.7.0，落后于发版标签两个 minor（v0.8.0 / v0.9.0 发版都没刷新它），现与 VERSION / CHANGELOG / CLI --version 对齐为同一来源，并加锁步测试守卫——发版时任一面漂移即 CI 失败。",
+        "补回缺失的 CLI --version：goreleaser 此前用 -X main.version 注入一个不存在的符号（Go 静默忽略 -X），现以 //go:embed VERSION 为单一真源，二进制的 --version 真正可用。"
+      ],
+      "en": [
+        "Version surfaces in lockstep: web/site.json content_version had been frozen at v0.7.0 — two minors behind the shipped tag (neither the v0.8.0 nor v0.9.0 release refreshed it). It now matches VERSION / CHANGELOG / the CLI --version as one source, guarded by a lockstep test that fails CI on any drift.",
+        "Restored the missing CLI --version: goreleaser had injected -X main.version into a symbol that did not exist (Go silently ignores -X on an absent symbol); the version now comes from a single //go:embed VERSION source, and the binary's --version actually works."
+      ]
+    },
     {
       "version": "v0.7.0",
       "date": "2026-08-04",

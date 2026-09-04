@@ -15,7 +15,13 @@ builds:
     goos: [linux, darwin, windows]
     goarch: [amd64, arm64]
     ldflags:
-      - -s -w -X main.version={{.Version}}
+      # The version is embedded from the VERSION file at the repo root (package
+      # version, //go:embed VERSION) — the single source of truth the lockstep
+      # test asserts. The release checkout's VERSION file equals the tag, so no
+      # link-time -X injection is needed (v0.10.0, fix-cli-missing-version-surface:
+      # the previous -X main.version set a symbol that did not exist, a silent
+      # no-op).
+      - -s -w
 
 archives:
   - id: default
