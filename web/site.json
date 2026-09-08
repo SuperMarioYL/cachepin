@@ -211,5 +211,6 @@
         "code": "go run ./cmd/cachepin --upstream http://localhost:8080\n# Enable only after reviewing append-only semantics:\ngo run ./cmd/cachepin --upstream http://localhost:8080 --pin"
       }
     ]
-  }
+  },
+  "content_version": "0.10.0"
 }
