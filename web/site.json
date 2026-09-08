@@ -148,6 +148,10 @@
           "alt": {
             "en": "Follow the operation",
             "zh": "处理过程"
+          },
+          "mobile": {
+            "light": "/assets/presentation/process-mobile-light.svg",
+            "dark": "/assets/presentation/process-mobile-dark.svg"
           }
         }
       },
@@ -166,6 +170,10 @@
           "alt": {
             "en": "How CachePin works",
             "zh": "CachePin 的工作方式"
+          },
+          "mobile": {
+            "light": "/assets/presentation/architecture-mobile-light.svg",
+            "dark": "/assets/presentation/architecture-mobile-dark.svg"
           }
         }
       },
@@ -184,6 +192,10 @@
           "alt": {
             "en": "Connect the pieces",
             "zh": "输入与输出"
+          },
+          "mobile": {
+            "light": "/assets/presentation/integrations-mobile-light.svg",
+            "dark": "/assets/presentation/integrations-mobile-dark.svg"
           }
         }
       }
@@ -212,5 +224,43 @@
       }
     ]
   },
-  "content_version": "0.10.0"
+  "content_version": "0.10.0",
+  "changelog": [
+    {
+      "version": "v0.10.0",
+      "date": "2026-09-04",
+      "zh": [
+        "版本面同源锁步：web/site.json 的 content_version 此前停在 v0.7.0，落后于发版标签两个 minor（v0.8.0 / v0.9.0 发版都没刷新它），现与 VERSION / CHANGELOG / CLI --version 对齐为同一来源，并加锁步测试守卫——发版时任一面漂移即 CI 失败。",
+        "补回缺失的 CLI --version：goreleaser 此前用 -X main.version 注入一个不存在的符号（Go 静默忽略 -X），现以 //go:embed VERSION 为单一真源，二进制的 --version 真正可用。"
+      ],
+      "en": [
+        "Version surfaces in lockstep: web/site.json content_version had been frozen at v0.7.0 — two minors behind the shipped tag (neither the v0.8.0 nor v0.9.0 release refreshed it). It now matches VERSION / CHANGELOG / the CLI --version as one source, guarded by a lockstep test that fails CI on any drift.",
+        "Restored the missing CLI --version: goreleaser had injected -X main.version into a symbol that did not exist (Go silently ignores -X on an absent symbol); the version now comes from a single //go:embed VERSION source, and the binary's --version actually works."
+      ]
+    },
+    {
+      "version": "v0.7.0",
+      "date": "2026-08-04",
+      "zh": [
+        "--pin 现在扛得住 system prompt 的重渲染——session-id 改为只取首条 user 消息，harness 重渲染系统提示（压缩上下文、重排工具 schema）不再 fork 会话、不再报「100% 保留 · 0 重处理」的静默绿灯，而是被当作 msg[0] 的内容发散捕获，--pin 也拿到真实前序 canonical 可供对齐。",
+        "代理做了 slowloris 加固——显式 http.Server 设置 ReadHeaderTimeout/IdleTimeout，慢连接或崩溃后悬挂的连接不再长期占用服务端 goroutine；WriteTimeout 保持为 0，SSE /chat/completions 流不会被中途掐断。"
+      ],
+      "en": [
+        "--pin now survives system-prompt re-renders — session-id is derived from the first user message only, so a harness re-rendering the system prompt (context compaction, a tool-schema reorder) no longer forks the session and reports a silent-green '100% preserved | 0 reprocessed' while the upstream reprocesses everything; it is now caught as a content divergence at msg[0], and --pin gets a real prior canonical to reconcile against.",
+        "The proxy is slowloris-hardened — an explicit http.Server sets ReadHeaderTimeout/IdleTimeout so a slow or dangling client can no longer hold a server goroutine forever; WriteTimeout stays at zero so SSE /chat/completions streams are not cut off mid-token."
+      ]
+    },
+    {
+      "version": "v0.5.0",
+      "date": "2026-07-23",
+      "zh": [
+        "空闲会话现在每一轮都过期——即便关掉会话数上限（--max-sessions 0 --idle-ttl 10m），长跑部署的内存也有界；过期不再只在「新会话到来」时才扫一次。",
+        "同一会话被并发投递的多轮请求不再悄悄丢一轮——读历史、重排、写回合成一个不可插队的步骤，并行工具调用和批量补全下每一轮都留在钉住的历史里。"
+      ],
+      "en": [
+        "Idle sessions now expire on every turn — memory stays bounded on long-uptime deployments even with the session cap off (--max-sessions 0 --idle-ttl 10m); the sweep no longer fires only when a brand-new session arrives.",
+        "Concurrent same-session turns no longer get silently dropped — read-history, reconcile, and write-back now run as one uninterruptible step, so every turn stays in the pinned history under parallel tool calls and batched completions."
+      ]
+    }
+  ]
 }
