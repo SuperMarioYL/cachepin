@@ -1,135 +1,215 @@
 {
-  "schema": 1,
+  "schema": 3,
   "name": "cachepin",
   "github": "https://github.com/SuperMarioYL/cachepin",
   "host": "cachepin.lei6393.com",
-  "lang": { "primary": "zh", "toggle": true },
-  "accent": ["#E11D48"],
-  "content_version": "0.10.0",
+  "palette": "auto",
+  "lang": {
+    "primary": "en",
+    "toggle": true
+  },
+  "meta": {
+    "visual_style": "neon-particle",
+    "demo_source": "docs/demo-results.json"
+  },
   "hero": {
-    "eyebrow": {
-      "zh": "v0.10.0：版本面同源锁步 — content_version / VERSION / CHANGELOG / --version 不再漂移，站点与发版同步；`cachepin --version` 真正可用",
-      "en": "v0.10.0: version surfaces in lockstep — content_version / VERSION / CHANGELOG / --version no longer drift; the site tracks the release and `cachepin --version` actually works"
-    },
     "headline": {
-      "zh": "--pin 现在，连 system prompt 被重渲染都不再悄悄失效\n它守住该守的前缀，并指出是哪一条先发散",
-      "en": "--pin no longer slips when the system prompt is re-rendered\nIt holds the prefix that should stay, and pinpoints where it first diverged"
+      "en": "See when a harness rewrites conversation history.",
+      "zh": "看见调用框架何时重写会话历史。"
     },
     "sub": {
-      "zh": "一个单二进制，架在你的编码 Agent 和自托管模型服务之间。v0.7.0 之前，harness 重渲染系统提示（压缩上下文、重排工具 schema）会让 session-id 变化，代理把它当成全新会话、报「100% 保留 · 0 重处理」的静默绿灯，而上游其实从头重算整段前缀；--pin 也因拿不到前序 canonical 而放行原样请求。现在 session-id 只取首条 user 消息，重渲染留在同一会话内被当作 msg[0] 的内容发散捕获，--pin 也拿到真实前序可供对齐；代理同时加了 ReadHeaderTimeout/IdleTimeout，慢连接或崩溃后悬挂的连接不再长期占用服务端 goroutine。",
-      "en": "A single binary you drop between your coding agent and your self-hosted model server. Before v0.7.0, a harness re-rendering the system prompt (context compaction, a tool-schema reorder) changed the session-id, so the proxy treated it as a brand-new session and reported a silent-green '100% preserved | 0 reprocessed' while the upstream reprocessed the entire prefix from byte 0; --pin also forwarded the raw mutated request because it had no prior canonical. Now session-id is derived from the first user message only, so a system re-render stays in-session and is caught as a content divergence at msg[0], and --pin gets a real prior canonical to reconcile against; the proxy is also slowloris-hardened with ReadHeaderTimeout/IdleTimeout so a slow or dangling client can no longer hold a server goroutine forever."
+      "en": "CachePin tracks message prefixes between requests and optionally rewrites mutated histories into append-only extensions of its canonical history.",
+      "zh": "CachePin 跟踪请求之间的消息前缀，并可将变化历史改写为规范历史的追加扩展。"
     },
-    "command": "cachepin --upstream http://localhost:8080 --pin --idle-ttl 1h",
-    "cta": { "zh": "开始使用", "en": "Get started" },
-    "ctaGithub": { "zh": "在 GitHub 查看", "en": "View on GitHub" }
+    "href": "#quickstart"
   },
   "advantages": [
     {
-      "title": { "zh": "钉住的前缀被赶走，不再静默失效", "en": "Pinned coverage no longer dies in silence" },
-      "body": {
-        "zh": "当内存压力大、某个会话被清出去又回来时，旧版 --pin 只能拿到空的历史，于是放行原样请求、重新计费，而指标面板还显示 100% 保留、0 重处理——你最关心的那条「钉住」保证，恰恰在最该生效时被悄悄绕过。现在工具会记下被清走的会话，下一轮显式打一条告警，并在机器可读日志里标 pin_coverage_lost:true——你一眼就知道该把容量调大。",
-        "en": "When memory pressure evicts a session and it later returns, the old --pin got an empty history and short-circuited — the request went through raw and got re-billed while the dashboard still read 100% preserved, 0 reprocessed. The very guarantee you turned --pin on for was silently bypassed at the moment it mattered most. Now the tool records evicted sessions, emits an explicit WARN on the next turn, and flags pin_coverage_lost:true in the machine-readable log — so you see immediately that it's time to raise the capacity."
+      "title": {
+        "en": "Locate mutation boundaries",
+        "zh": "定位变化边界"
       },
-      "chips": [
-        "› 记下被清走的会话",
-        "› WARN + pin_coverage_lost:true",
-        "› 不再静默绿灯"
-      ]
+      "body": {
+        "en": "The common-prefix index points to the first changed message.",
+        "zh": "公共前缀索引指向首条变化消息。"
+      }
     },
     {
-      "title": { "zh": "同一会话并发投递，不再悄悄丢一轮", "en": "Concurrent same-session turns no longer get dropped" },
-      "body": {
-        "zh": "一个多 Agent 编排器对同一个会话并发投递多轮（并行工具调用、批量补全）时，旧版 --pin 在「读历史、重排、写回」之间会被另一轮插队——两轮读到同一份旧历史、各自重排，后写的覆盖先写的，这一轮就从钉住的历史里悄悄消失，下一轮重排便对着错的基准算。钉子看起来还在，其实少了一块。现在对同一会话的这几步合成一步、不再被插队，并发再多轮也按调用顺序整行落地，每一轮都留在历史里。",
-        "en": "When a multi-agent harness fires several concurrent turns at the same session (parallel tool calls, batched completions), the old --pin could be interleaved between read-history, reconcile, and write-back — both turns read the same stale prior, each reconciled against it, and the later write overwrote the earlier, so that turn silently dropped out of the pinned history and the next reconcile ran against the wrong ground truth. The pin looked intact but was missing a piece. Now those steps for one session run as a single step that can't be interleaved, so no matter how many turns land at once, they settle in call order and every turn stays in the history."
+      "title": {
+        "en": "Inspect rewrite semantics",
+        "zh": "检查改写语义"
       },
-      "chips": [
-        "› 同一会话几步合一",
-        "› 并发按调用顺序整行落地",
-        "› 每一轮都在历史里"
-      ]
+      "body": {
+        "en": "Canonical history and appended suffix are explicit.",
+        "zh": "规范历史与追加后缀均明确可见。"
+      }
     },
     {
-      "title": { "zh": "重启不丢日志，并发也不乱序", "en": "Logs survive restarts — and stay ordered under load" },
-      "body": {
-        "zh": "旧版 --ndjson 每次重启都把先前攒下的面板日志清空；多会话并发时，每条请求抢同一文件位置，内核按拿锁顺序写，可能把第 N+1 轮写到第 N 轮前面——正好砸中你想要多会话隔离的场景。现在日志改成追加写入，重启后先前的轮次还在；并发写入被同一把锁护住，整行落地、按调用顺序排好。",
-        "en": "The old --ndjson wiped the dashboard log you'd asked it to accumulate on every restart; under concurrent multi-session traffic each request raced for the same file offset and the kernel wrote them in lock-grab order — turn N+1 could land ahead of turn N, right in the scenario the multi-session cap is meant for. Now the log is opened in append mode, so prior turns survive a restart; concurrent writes are guarded by one lock and land as whole, in-call-order lines."
+      "title": {
+        "en": "Use an HTTP boundary",
+        "zh": "通过 HTTP 接入"
       },
-      "chips": [
-        "› 追加写入，重启累积",
-        "› 一把锁护住整行",
-        "› 多会话不交错"
-      ]
+      "body": {
+        "en": "The proxy sits between a harness and its compatible endpoint.",
+        "zh": "代理位于调用框架与兼容端点之间。"
+      }
+    }
+  ],
+  "demo": {
+    "title": {
+      "en": "Run it on a complete example",
+      "zh": "运行完整示例"
+    },
+    "note": {
+      "en": "Compare two explicit histories where an assistant answer changes, then print exactly what the production reconciler retains and appends.",
+      "zh": "比较一条助手回答发生变化的两份明确历史，再打印生产协调器实际保留与追加的内容。"
+    },
+    "source": "https://github.com/SuperMarioYL/cachepin/blob/main/docs/demo-results.json",
+    "steps": [
+      {
+        "label": "Recorded run",
+        "body": "Reconcile two explicit message histories through the production pin algorithm. No proxy, inference server or KV cache measurement.",
+        "command": "go run ./examples/presentation-demo",
+        "output": "common prefix: 2 messages\nrewritten: true\nmessage count: 4 -> 5\n0 system \"Be precise.\"\n1 user \"Review code.\"\n2 assistant \"Original answer.\"\n3 assistant \"Corrected answer.\"\n4 user \"Continue.\"",
+        "image": "/assets/presentation/demo-0-light.svg",
+        "imageDark": "/assets/presentation/demo-0-dark.svg"
+      }
+    ]
+  },
+  "quickstart": {
+    "title": {
+      "en": "Try it locally",
+      "zh": "本地上手"
+    },
+    "body": {
+      "en": "Compare two explicit histories where an assistant answer changes, then print exactly what the production reconciler retains and appends.",
+      "zh": "比较一条助手回答发生变化的两份明确历史，再打印生产协调器实际保留与追加的内容。"
+    },
+    "steps": [
+      {
+        "title": {
+          "en": "Install from source",
+          "zh": "从源码安装"
+        },
+        "code": "git clone https://github.com/SuperMarioYL/cachepin.git\ncd cachepin\ngo build ./cmd/cachepin"
+      },
+      {
+        "title": {
+          "en": "Run the included example",
+          "zh": "运行随仓示例"
+        },
+        "code": "go run ./examples/presentation-demo"
+      }
+    ]
+  },
+  "limitations": [
+    {
+      "en": "Prefix percentages and reprocessed-token values are message-based observations and estimates, not direct KV cache telemetry.",
+      "zh": "前缀百分比与重新处理 token 值是基于消息的观察和估计，不是直接 KV 缓存遥测。"
     },
     {
-      "title": { "zh": "关掉会话上限，空闲会话也每轮过期", "en": "Idle sessions expire every turn — even with the cap off" },
-      "body": {
-        "zh": "旧版的空闲过期只在「新会话到来」时才扫一次后段——可你开 --max-sessions 0 --idle-ttl 10m，正是想让空闲会话自己过期、不靠新流量；结果只有粘性会话来回跑、没有新会话，过期就永远不触发，空闲会话全钉在内存里漏到天亮。现在这把扫帚在每一轮之后都扫一次：刚碰过的会话在前头、不会被误清，空闲的则在下一轮任何会话到来时过期——不另起后台进程，长跑、稀疏、共享部署的内存就此有界。",
-        "en": "The old idle expiry only swept the back of the list when a brand-new session arrived — but you set --max-sessions 0 --idle-ttl 10m precisely so idle sessions expire on their own, without new traffic. With only sticky sessions returning and no new sessions, the sweep never fired, and every idle session stayed pinned in memory, leaking until morning. Now that sweep runs after every turn: the just-touched session sits at the front and is never a victim, while idle ones expire the next time any session is observed — no background process, so sparse, long-uptime, shared deployments keep memory bounded."
-      },
-      "chips": [
-        "› --idle-ttl 10m / 1h",
-        "› 每轮都扫，无需新流量",
-        "› --max-sessions 0 也安全"
-      ]
+      "en": "--pin changes request semantics: an edited or removed earlier message can remain in canonical history, and appended content can increase context length.",
+      "zh": "--pin 会改变请求语义：被编辑或删除的旧消息可能仍保留在规范历史，追加内容也会增加上下文长度。"
+    },
+    {
+      "en": "The demo only reconciles message arrays; it does not establish server cache reuse or throughput savings.",
+      "zh": "示例仅协调消息数组，不证明服务器缓存复用或吞吐收益。"
     }
   ],
   "scene": {
-    "kind": "hub-nodes",
-    "nodes": ["Pin silently voided", "Same-session turn dropped", "Log wiped on restart", "Writes reordered", "Idle memory grows"]
+    "kind": "neon-graph",
+    "fallback": "/assets/presentation/scene-dark.svg",
+    "fallbackLight": "/assets/presentation/scene-light.svg"
   },
-  "cta": {
-    "headline": {
-      "zh": "钉住该钉住的前缀——驱逐与并发下都不丢，并告诉你哪一份溜了",
-      "en": "Pin the prefixes that should stay — under eviction and concurrency, and tell you which slipped"
+  "story": {
+    "intro": {
+      "title": {
+        "en": "A concrete task",
+        "zh": "从实际任务出发"
+      },
+      "body": {
+        "en": "A reordered or rewritten early message changes the input prefix even when most of the conversation looks unchanged. Message-level tracking makes that mutation visible before you interpret cache behavior.",
+        "zh": "早期消息重排或改写会改变输入前缀，即使大部分会话看起来没有变化。消息级跟踪让你在解释缓存行为之前看到这些变化。"
+      }
     },
-    "sub": {
-      "zh": "开源、Apache-2.0、一个单二进制。架在编码 Agent 和你的模型服务之间，让 KV Cache 不再被悄悄赶走又重新计费。",
-      "en": "Open source, Apache-2.0, a single binary. Sit it between your coding agent and your model server so the KV Cache stops getting silently evicted and re-billed."
-    },
-    "button": { "zh": "在 GitHub 上开始", "en": "Get started on GitHub" }
-  },
-  "footer": {
-    "tag": {
-      "zh": "给编码 Agent 的 KV Cache 钉子",
-      "en": "The pin that keeps your coding agent's KV Cache alive"
-    }
-  },
-  "changelog": [
-    {
-      "version": "v0.10.0",
-      "date": "2026-09-04",
-      "zh": [
-        "版本面同源锁步：web/site.json 的 content_version 此前停在 v0.7.0，落后于发版标签两个 minor（v0.8.0 / v0.9.0 发版都没刷新它），现与 VERSION / CHANGELOG / CLI --version 对齐为同一来源，并加锁步测试守卫——发版时任一面漂移即 CI 失败。",
-        "补回缺失的 CLI --version：goreleaser 此前用 -X main.version 注入一个不存在的符号（Go 静默忽略 -X），现以 //go:embed VERSION 为单一真源，二进制的 --version 真正可用。"
-      ],
-      "en": [
-        "Version surfaces in lockstep: web/site.json content_version had been frozen at v0.7.0 — two minors behind the shipped tag (neither the v0.8.0 nor v0.9.0 release refreshed it). It now matches VERSION / CHANGELOG / the CLI --version as one source, guarded by a lockstep test that fails CI on any drift.",
-        "Restored the missing CLI --version: goreleaser had injected -X main.version into a symbol that did not exist (Go silently ignores -X on an absent symbol); the version now comes from a single //go:embed VERSION source, and the binary's --version actually works."
-      ]
-    },
-    {
-      "version": "v0.7.0",
-      "date": "2026-08-04",
-      "zh": [
-        "--pin 现在扛得住 system prompt 的重渲染——session-id 改为只取首条 user 消息，harness 重渲染系统提示（压缩上下文、重排工具 schema）不再 fork 会话、不再报「100% 保留 · 0 重处理」的静默绿灯，而是被当作 msg[0] 的内容发散捕获，--pin 也拿到真实前序 canonical 可供对齐。",
-        "代理做了 slowloris 加固——显式 http.Server 设置 ReadHeaderTimeout/IdleTimeout，慢连接或崩溃后悬挂的连接不再长期占用服务端 goroutine；WriteTimeout 保持为 0，SSE /chat/completions 流不会被中途掐断。"
-      ],
-      "en": [
-        "--pin now survives system-prompt re-renders — session-id is derived from the first user message only, so a harness re-rendering the system prompt (context compaction, a tool-schema reorder) no longer forks the session and reports a silent-green '100% preserved | 0 reprocessed' while the upstream reprocesses everything; it is now caught as a content divergence at msg[0], and --pin gets a real prior canonical to reconcile against.",
-        "The proxy is slowloris-hardened — an explicit http.Server sets ReadHeaderTimeout/IdleTimeout so a slow or dangling client can no longer hold a server goroutine forever; WriteTimeout stays at zero so SSE /chat/completions streams are not cut off mid-token."
-      ]
-    },
-    {
-      "version": "v0.5.0",
-      "date": "2026-07-23",
-      "zh": [
-        "空闲会话现在每一轮都过期——即便关掉会话数上限（--max-sessions 0 --idle-ttl 10m），长跑部署的内存也有界；过期不再只在「新会话到来」时才扫一次。",
-        "同一会话被并发投递的多轮请求不再悄悄丢一轮——读历史、重排、写回合成一个不可插队的步骤，并行工具调用和批量补全下每一轮都留在钉住的历史里。"
-      ],
-      "en": [
-        "Idle sessions now expire on every turn — memory stays bounded on long-uptime deployments even with the session cap off (--max-sessions 0 --idle-ttl 10m); the sweep no longer fires only when a brand-new session arrives.",
-        "Concurrent same-session turns no longer get silently dropped — read-history, reconcile, and write-back now run as one uninterruptible step, so every turn stays in the pinned history under parallel tool calls and batched completions."
-      ]
-    }
-  ]
+    "sections": [
+      {
+        "title": {
+          "en": "Follow the operation",
+          "zh": "处理过程"
+        },
+        "body": {
+          "en": "The proxy parses chat requests while preserving unknown fields. Session tracking hashes messages and finds the longest common prefix. In pin mode, reconciliation preserves the entire canonical history and appends the incoming suffix from the mutation boundary.",
+          "zh": "代理解析聊天请求并保留未知字段；会话跟踪对消息计算哈希并寻找最长公共前缀。pin 模式保留全部规范历史，再从变化边界追加传入后缀。"
+        },
+        "image": {
+          "light": "/assets/presentation/process-light.svg",
+          "dark": "/assets/presentation/process-dark.svg",
+          "alt": {
+            "en": "Follow the operation",
+            "zh": "处理过程"
+          }
+        }
+      },
+      {
+        "title": {
+          "en": "How CachePin works",
+          "zh": "CachePin 的工作方式"
+        },
+        "body": {
+          "en": "The proxy parses chat requests while preserving unknown fields. Session tracking hashes messages and finds the longest common prefix. In pin mode, reconciliation preserves the entire canonical history and appends the incoming suffix from the mutation boundary.",
+          "zh": "代理解析聊天请求并保留未知字段；会话跟踪对消息计算哈希并寻找最长公共前缀。pin 模式保留全部规范历史，再从变化边界追加传入后缀。"
+        },
+        "image": {
+          "light": "/assets/presentation/architecture-light.svg",
+          "dark": "/assets/presentation/architecture-dark.svg",
+          "alt": {
+            "en": "How CachePin works",
+            "zh": "CachePin 的工作方式"
+          }
+        }
+      },
+      {
+        "title": {
+          "en": "Connect the pieces",
+          "zh": "输入与输出"
+        },
+        "body": {
+          "en": "The following routes are implemented in the source. Choose the input that matches your task and keep the resulting artifact with your project.",
+          "zh": "以下路径已有源码实现。按任务选择输入，并把生成的结果与项目一起保存。"
+        },
+        "image": {
+          "light": "/assets/presentation/integrations-light.svg",
+          "dark": "/assets/presentation/integrations-dark.svg",
+          "alt": {
+            "en": "Connect the pieces",
+            "zh": "输入与输出"
+          }
+        }
+      }
+    ],
+    "details": [
+      {
+        "title": {
+          "en": "Configuration",
+          "zh": "配置"
+        },
+        "body": {
+          "en": "Configure the upstream server and point the harness base URL at CachePin’s listener. Pin mode is opt-in. Use explicit session identity when the harness supports it and inspect the request semantics before enabling rewrites.",
+          "zh": "配置上游服务器，再把调用框架 base URL 指向 CachePin 监听地址。pin 模式需要显式开启。框架支持时应使用明确会话标识，并在启用改写前检查请求语义。"
+        }
+      },
+      {
+        "title": {
+          "en": "Further use",
+          "zh": "进一步使用"
+        },
+        "body": {
+          "en": "The CLI exposes the following operations. Commands after the example use your own paths or identifiers.",
+          "zh": "CLI 提供以下操作。示例之外的命令需要替换成你的文件路径或标识。"
+        },
+        "code": "go run ./cmd/cachepin --upstream http://localhost:8080\n# Enable only after reviewing append-only semantics:\ngo run ./cmd/cachepin --upstream http://localhost:8080 --pin"
+      }
+    ]
+  }
 }

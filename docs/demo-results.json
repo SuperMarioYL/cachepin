@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "source_revision": "756d74570052fd73977b6bd2a0fb1ca0bd1dc738",
+  "scope": "Reconcile two explicit message histories through the production pin algorithm. No proxy, inference server or KV cache measurement.",
+  "steps": [
+    {
+      "label": "Recorded run",
+      "body": "Reconcile two explicit message histories through the production pin algorithm. No proxy, inference server or KV cache measurement.",
+      "command": "go run ./examples/presentation-demo",
+      "output": "common prefix: 2 messages\nrewritten: true\nmessage count: 4 -> 5\n0 system \"Be precise.\"\n1 user \"Review code.\"\n2 assistant \"Original answer.\"\n3 assistant \"Corrected answer.\"\n4 user \"Continue.\""
+    }
+  ]
+}

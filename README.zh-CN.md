@@ -1,181 +1,128 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./assets/hero-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="./assets/hero-light.svg">
-    <img src="./assets/hero-light.svg" width="880" alt="CachePin — 让你的 Coding Agent 在多轮对话中保住 KV Cache" />
-  </picture>
-</p>
+[English](./README.md) · [Website](https://cachepin.lei6393.com) · [GitHub](https://github.com/SuperMarioYL/cachepin)
 
-<p align="center"><a href="./README.md">English</a> | <strong>简体中文</strong></p>
+<picture>
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="./assets/presentation/hero-mobile-dark.svg">
+  <source media="(max-width: 600px)" srcset="./assets/presentation/hero-mobile-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/presentation/hero-dark.svg">
+  <img src="./assets/presentation/hero-light.svg" width="960" alt="Hero diagram">
+</picture>
 
-<p align="center">
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue.svg" alt="MIT License" /></a>
-  <a href="https://github.com/SuperMarioYL/cachepin/releases"><img src="https://img.shields.io/badge/release-v0.7.0-6d28d9.svg" alt="release v0.7.0" /></a>
-  <a href="https://github.com/SuperMarioYL/cachepin/actions"><img src="https://img.shields.io/badge/CI-go%20build%20%2B%20test-success.svg" alt="CI" /></a>
-  <img src="https://img.shields.io/badge/go-1.24-00ADD8.svg" alt="Go 1.24" />
-  <img src="https://img.shields.io/badge/KV%20Cache-pinned-6d28d9.svg" alt="KV Cache" />
-  <img src="https://img.shields.io/badge/Coding%20Agent-neutral-14b8a6.svg" alt="Coding Agent" />
-</p>
+# cachepin
 
-> 一个单文件 Go 二进制，塞在你的 **Coding Agent** harness 和 OpenAI 兼容模型服务之间。它会量化——并在加上 `--pin` 后保护——那块被 harness 悄悄打掉的服务端 **KV Cache**。
+**看见调用框架何时重写会话历史。**
 
-> **CachePin v0.7.0** —— `--pin` 现在能扛住 system prompt 的重渲染（harness 重渲染系统消息——重排工具 schema、压缩上下文——时，session-id 不再 fork，于是不再一边悄悄让上游整段重算、一边报「100% 保留 · 0 重处理」的静默绿灯）；代理也做了 slowloris 加固（`ReadHeaderTimeout`/`IdleTimeout`，慢连接或崩溃后悬挂的连接不再长期占用服务端 goroutine）。3 步快速开始见下。如果它能帮你省 token，欢迎在 GitHub 上点 ★ star。
+CachePin 跟踪请求之间的消息前缀，并可将变化历史改写为规范历史的追加扩展。
 
-## 为什么是现在
+## 为什么需要它
 
-如果你自建模型（llama.cpp、vLLM），再用 Claude Code、Cursor、opencode 这类 **Coding Agent** harness 去驱动它，你大概率交过这笔「税」：harness 重渲染一个工具结果、或压缩一次上下文，消息数组在第 3 条变了，推理服务的 **KV Cache** 从那一条开始整段失效——于是每一轮都默默重算 3 万多个 token。[@CreativelyBankrupt](https://twitter.com/CreativelyBankrupt) 一直在提的正是这种前缀缓存的脆弱性；r/LocalLLaMA 的 "checkpoints" 帖子、以及 [Hmbown/CodeWhale](https://github.com/Hmbown/CodeWhale) 这类定制 agent，都是在一个个 harness 上各自打补丁。CachePin 把这个思路做成了可移植版：一个与 harness 无关的代理，挡在*任意* OpenAI 兼容服务前面，告诉你 mutation 到底发生在哪一条消息，并把请求重写回 append-only 形式，让缓存活下来。不用 fork agent，不锁模型——把 `OPENAI_BASE_URL` 指过来，照常干活。
+早期消息重排或改写会改变输入前缀，即使大部分会话看起来没有变化。消息级跟踪让你在解释缓存行为之前看到这些变化。
 
-## <img src="https://api.iconify.design/tabler:topology-star-3.svg?color=%236d28d9&width=24" height="22" align="absmiddle" alt=""> 架构
+- **定位变化边界** — 公共前缀索引指向首条变化消息。
+- **检查改写语义** — 规范历史与追加后缀均明确可见。
+- **通过 HTTP 接入** — 代理位于调用框架与兼容端点之间。
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./assets/atlas-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="./assets/atlas-light.svg">
-    <img src="./assets/atlas-light.svg" width="880" alt="Coding Agent harness 把 OpenAI 兼容请求发给 CachePin 代理；会话追踪器对每条消息做内容哈希，算出最长公共前缀的 mutation 边界；pin 模式把被改写的一轮重写回 append-only 形式；每轮输出指标；请求转发到上游模型服务，其 KV 缓存得以存活">
-  </picture>
-</p>
+## 架构
 
-你的 coding agent 把 `OPENAI_BASE_URL` 指向 CachePin 而非模型服务。在代理边界内，**会话追踪器**对每条消息做内容哈希，与规范历史算最长公共前缀——这个边界正好就是上游前缀缓存失效的位置。**指标**单元每轮输出 preserved-prefix %、重算 token 数与 mutation 索引；加上 `--pin` 后，**重写器**把被改写的请求重写回 append-only 形式，让服务端 **KV Cache** 存活。流式 `/v1/chat/completions` 响应逐块透传，harness 根本察觉不到代理的存在。
+<picture>
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="./assets/presentation/architecture-mobile-dark.svg">
+  <source media="(max-width: 600px)" srcset="./assets/presentation/architecture-mobile-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/presentation/architecture-dark.svg">
+  <img src="./assets/presentation/architecture-light.svg" width="960" alt="Architecture diagram">
+</picture>
 
-## 目录
+代理解析聊天请求并保留未知字段；会话跟踪对消息计算哈希并寻找最长公共前缀。pin 模式保留全部规范历史，再从变化边界追加传入后缀。
 
-- [快速上手（10 分钟）](#快速上手10-分钟)
-- [演示](#演示)
-- [你会看到什么](#你会看到什么)
-- [工作原理](#工作原理)
-- [配置](#配置)
-- [基准测试](#基准测试)
-- [对比 CodeWhale](#对比-codewhale)
-- [路线图](#路线图)
-- [参与贡献](#参与贡献)
-- [许可证](#许可证)
-- [一句话分享](#一句话分享)
+| 组件 | 职责 |
+| --- | --- |
+| `Chat proxy` | internal/proxy |
+| `Message tracker` | internal/session |
+| `History reconciler` | internal/pin |
+| `Prefix metrics` | internal/metrics |
 
-## 快速上手（10 分钟）
+## 安装与快速上手
+
+使用仓库清单指定的运行时版本构建，并在仓库根目录运行示例。
 
 ```bash
-# 1. 安装单文件二进制
-go install github.com/SuperMarioYL/cachepin/cmd/cachepin@latest
-
-# 2. 指向你的 OpenAI 兼容服务（llama.cpp、vLLM……）
-cachepin --upstream http://localhost:8080      # 监听 :8089
-
-# 3. 让你的 coding agent 走 CachePin
-export OPENAI_BASE_URL=http://localhost:8089
+git clone https://github.com/SuperMarioYL/cachepin.git
+cd cachepin
+go build ./cmd/cachepin
 ```
 
-照常使用你的 coding agent，行为零变化。CachePin 每一轮打印一行；其余什么都不动。当你想从「量化」升级到「保护」时，加上 `--pin` 重启即可。
+比较一条助手回答发生变化的两份明确历史，再打印生产协调器实际保留与追加的内容。
 
-> 国内访问：仓库会同步推送 Gitee 镜像（GFW 友好），地址见 Releases 说明。
-
-## <img src="https://api.iconify.design/tabler:photo.svg?color=%236d28d9&width=24" height="22" align="absmiddle" alt=""> 演示
-
-![CachePin 演示——开启 --pin 后重算 token 数坍缩到 ~0](assets/demo.gif)
-
-[VHS 脚本](./docs/demo.tape) 录制了完整的 happy path：先以「仅量化」模式启动 CachePin，看到被改写的一轮重算 ~31k token；再加 `--pin` 重启，看到同一轮重新坍缩到零。
-
-## 你会看到什么
-
-干净的 append-only 会话能复用整个前缀：
-
-```
-turn 12 | prefix preserved 100% | 0 tokens reprocessed
+```bash
+go run ./examples/presentation-demo
 ```
 
-一旦 harness 改写了历史，CachePin 会点名那条边界——而**上下文布局 linter**会进一步指出前缀**究竟在哪个字节偏移**、被**哪个消息字段**（system prompt、被重排的工具 schema、空白重渲染……）打破：
+## 实际运行示例
 
-```
-turn 13 | prefix preserved 41% | ~31k tokens reprocessed | MUTATION at msg[3] | content broke prefix at byte 14237
-```
+<picture>
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="./assets/presentation/process-mobile-dark.svg">
+  <source media="(max-width: 600px)" srcset="./assets/presentation/process-mobile-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/presentation/process-dark.svg">
+  <img src="./assets/presentation/process-light.svg" width="960" alt="Process diagram">
+</picture>
 
-加上 `--pin`，同样这一轮会在抵达服务端之前被重写回 append-only 形式，于是 **KV Cache** 得以保留，重算 token 数重新逼近零。`--pin` 下的每轮输出现在与基准测试完全一致——被重写回的一轮会报 `0 tokens reprocessed`，所以 `--ndjson` 面板反映的是上游真实情况，而不是原始 mutation。
+Reconciliation expands four incoming messages to five by retaining the old answer and appending the changed suffix.
 
-<details>
-<summary>机器可读输出（<code>--ndjson</code>）</summary>
-
-```json
-{"ts":"2026-06-22T12:00:00Z","session_id":"a1b2c3","turn":13,"preserved_prefix_pct":41.0,"reprocessed_tokens":31000,"total_tokens":52000,"mutated":true,"mutation_index":3,"prev_len":24,"incoming_len":26,"lcp":3,"layout_diverged":true,"layout_byte_offset":14237,"layout_msg_index":3,"layout_field":"content"}
-```
-
-每行一个 JSON 对象——基准测试和你自己搭的任何面板消费的都是这条流。`layout_*` 字段是 linter 的字节级诊断：`layout_field` 取值为 `role`、`content`、`name`、`tool_calls`、`tool_call_id`、`field-order`（JSON 框架／键顺序变了）或 `message-count`（有更早的消息被丢弃）。
-</details>
-
-## 工作原理
-
-核心原语是一份**规范化的 append-only 会话历史**，外加一条约定：任何转发出去的请求，其消息数组必须是它的*前缀扩展*。CachePin 对每条消息做内容哈希，与规范历史算最长公共前缀，那个边界正好就是服务端前缀缓存失效的位置。**上下文布局 linter**再在这个边界上做字节级深挖，点名是哪个字段打破了前缀稳定性，让你能从源头修掉那些「烧缓存」的抖动。
-
-```
-harness ──HTTP──▶ proxy ──▶ session tracker ──▶ metrics ──▶ stdout / NDJSON
-                    │              │
-                    │        pin/reconcile（开启 --pin 时）
-                    ▼
-             上游模型服务（llama.cpp / vLLM / API）
+```text
+common prefix: 2 messages
+rewritten: true
+message count: 4 -> 5
+0 system "Be precise."
+1 user "Review code."
+2 assistant "Original answer."
+3 assistant "Corrected answer."
+4 user "Continue."
 ```
 
-单二进制、单进程、纯标准库——没有容器，没有 Kubernetes，不依赖模型专属 tokenizer。流式 `/v1/chat/completions` 响应（SSE）逐块透传，harness 根本察觉不到 CachePin 的存在。
+完整命令与输出保存在 [docs/demo-results.json](./docs/demo-results.json). 输入和复现代码均随仓提供。
+
+![已有终端录制](./assets/demo.gif)
+
+保留已有录制供参考；上方文字示例给出当前可复现的操作。
+
+## 用法
+
+CLI 提供以下操作。示例之外的命令需要替换成你的文件路径或标识。
+
+```bash
+go run ./cmd/cachepin --upstream http://localhost:8080
+# Enable only after reviewing append-only semantics:
+go run ./cmd/cachepin --upstream http://localhost:8080 --pin
+```
 
 ## 配置
 
-CachePin 全靠命令行参数配置——没有配置文件。
+配置上游服务器，再把调用框架 base URL 指向 CachePin 监听地址。pin 模式需要显式开启。框架支持时应使用明确会话标识，并在启用改写前检查请求语义。
 
-| 参数 | 类型 | 默认值 | 含义 |
-| --- | --- | --- | --- |
-| `--upstream` | string | *（必填）* | OpenAI 兼容模型服务的基址，例如 `http://localhost:8080` |
-| `--listen` | string | `:8089` | CachePin 代理绑定的地址 |
-| `--pin` | bool | `false` | 把被改写的请求重写回 append-only 形式，保住上游 KV Cache |
-| `--ndjson` | string | *（关闭）* | 额外把每轮指标以 NDJSON 写入该路径（**追加**模式打开，重启后继续累积） |
-| `--max-sessions` | int | `1024` | 追踪会话数的上限；超过后按 LRU 淘汰最久未用的会话（`0` = 不限） |
-| `--idle-ttl` | duration | `0` | 淘汰最近一轮早于该时长的会话（例如 `10m`、`1h`）；`0` 表示只用 `--max-sessions` 数量上限 |
+## 集成与职责分工
 
-CachePin 的会话状态按进程驻留内存，不落盘。`--max-sessions` 上限让这个内存占用在长期运行或共享部署下保持有界——超过上限就淘汰最空闲的会话，于是新会话不断涌入也不会让内存无限增长。`--idle-ttl` 额外让单纯空闲的会话过期，于是稀疏的长期运行部署即使没有新会话涌入，内存也保持有界。若开启了 `--pin` 且某会话的 canonical 已被淘汰，该会话的下一轮会被原样转发（不再 reconcile），并附一行明确的 `WARN: canonical evicted`（以及 NDJSON 里的 `pin_coverage_lost:true`），提醒你调高 `--max-sessions`。
+<picture>
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="./assets/presentation/integrations-mobile-dark.svg">
+  <source media="(max-width: 600px)" srcset="./assets/presentation/integrations-mobile-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/presentation/integrations-dark.svg">
+  <img src="./assets/presentation/integrations-light.svg" width="960" alt="Integrations diagram">
+</picture>
 
-## 基准测试
+以下路径已有源码实现。按任务选择输入，并把生成的结果与项目一起保存。
 
-自己复现 before/after 曲线——它会重放一段固定的 50 轮对话（其 harness 每轮都改写一条早期消息），分别在不加 pin 与加 pin 的情况下各跑一遍：
+| 路径 | 已实现职责 |
+| --- | --- |
+| Chat completions HTTP | OpenAI-compatible proxy route |
+| Message arrays | Content and extension fields |
+| Streaming responses | Chunk forwarding |
+| Terminal metrics | Prefix and token estimates |
 
-```bash
-go run ./bench -turns 50 -out chart.csv
-```
+## 限制与后续方向
 
-它会输出 CSV 列 `turn,reprocessed_no_pin,reprocessed_pin,cumulative_no_pin,cumulative_pin`，并把节省汇总打到 stderr。重点就一句话：不加 `--pin` 时线性爬升的那条曲线，加上之后变平。
+- 前缀百分比与重新处理 token 值是基于消息的观察和估计，不是直接 KV 缓存遥测。
+- --pin 会改变请求语义：被编辑或删除的旧消息可能仍保留在规范历史，追加内容也会增加上下文长度。
+- 示例仅协调消息数组，不证明服务器缓存复用或吞吐收益。
 
-## 对比 CodeWhale
+直接服务器缓存测量与调用框架集成测试需要单独验证。
 
-诚实定位——CachePin 是一层垫片，不是竞品 agent。
+## 许可与贡献
 
-| | CachePin | [Hmbown/CodeWhale](https://github.com/Hmbown/CodeWhale) |
-| --- | --- | --- |
-| 与 harness 无关（Claude Code / Cursor / opencode 通吃） | ✓ | ✗（它本身就是个 agent） |
-| 完整的 coding-agent 体验（规划、工具、改文件） | ✗（只是代理） | ✓ |
-| 在*任意* OpenAI 兼容服务上 pin 住 KV Cache | ✓ | partial（仅自己的模型路径） |
-| 即插即用：保留你现在的 agent | ✓ | ✗（得换 agent） |
-| 精确定位 mutation 边界 | ✓ | — |
-
-想要开箱即用的 agent，CodeWhale 是更好的答案。想留住你已经在用的 agent、只是不再烧缓存，那就用 CachePin。
-
-## 路线图
-
-- [x] **m1 — 代理透传**：透明的 OpenAI 兼容反向代理，支持 SSE 流式；harness 察觉不到它的存在。
-- [x] **m2 — 追踪与上报**：按会话维护规范历史，每轮输出 preserved-prefix %、重算 token 数、mutation 事件。
-- [x] **m3 — pin 与基准**：`--pin` 重写让上游 KV Cache 存活，外加可复现的 50 轮基准测试。
-- [x] **m4 — 上下文布局 linter** *(v0.2.0，v0.3.0 加深)*：字节级前缀 diff，点名打破前缀稳定性的确切偏移与字段。v0.3.0 让它的精确定位坐标始终在场（offset 0 / `msg[0]` 保留，无发散统一为 `-1`），每轮输出一致的字段集。
-- [x] **v0.3.0 加固**：让会话存储在多会话并发下不再崩溃，`--pin` 每轮指标与基准测试对齐，并用 LRU 会话淘汰（`--max-sessions`）限制内存。
-- [x] **v0.4.0 加固**：让 `--ndjson` 跨重启与多会话并发写入存活下来（追加模式 + 写互斥锁），在 `--pin` 覆盖被淘汰静默失效时显式告警（而非伪绿指标），并新增 `--idle-ttl` 让空闲会话即便没有新流量也能过期。
-- [x] **v0.5.0 加固**：空闲会话现在每一轮 `Observe` 都过期（不再只在新建会话时触发），`--pin` 的 Canonical→Reconcile→Observe 每请求原子化，同一会话的并发轮次不再被悄悄丢一条。
-- [x] **v0.6.0 加固**：从 502 错误响应和启动日志里抹掉 upstream URL 里的凭据（`RedactedUpstream`），`--upstream http://sk-xxx@host` 里的 API key 不再出现在 502 响应体或被捕获的 stdout 里。
-- [x] **v0.7.0 修复**：`--pin` 扛住 system prompt 重渲染——session-id 现在只取首条 user 消息，harness 重渲染系统提示（压缩上下文、重排工具 schema）不再 fork 会话、不再报「100% 保留 · 0 重处理」的静默绿灯，而是被 tracker 当作 `msg[0]` 的内容发散捕获，`--pin` 也拿到真实的前序 canonical 可供对齐。代理同时做了 slowloris 加固：显式 `http.Server` 设置 `ReadHeaderTimeout`/`IdleTimeout`（WriteTimeout 保持为 0，SSE 流不会被中途掐断）。
-- [ ] **未来**：harness ↔ server 的 append-only 上下文协议规范；生态文档链接。
-
-## 参与贡献
-
-欢迎提 issue 和 PR——开一个 issue 描述你的 harness + server 组合以及你看到的 mutation，能附上 `--ndjson` 输出最好，边界会一目了然。
-
-## 许可证
-
-MIT © 2026 SuperMarioYL
-
-## 一句话分享
-
-```
-CachePin v0.7.0 —— --pin 现在扛得住 system prompt 的重渲染（session-id 不再 fork），代理也做了 slowloris 加固（ReadHeaderTimeout/IdleTimeout）。与 harness 无关的 Go 代理，让你的 Coding Agent 在多轮对话中保住 KV Cache。自建 llama.cpp/vLLM 每轮重算 3 万 token？把 OPENAI_BASE_URL 指过来。10 分钟即插即用。https://github.com/SuperMarioYL/cachepin  ★ 能省 token 就点个 star。
-```
+许可见 [LICENSE](./LICENSE). 反馈问题时请提供最小输入、执行命令和实际输出。

@@ -1,0 +1,38 @@
+{
+  "mode": "auto",
+  "id": "df56e6-e76aaa-d7acf6-54c797fd0b98",
+  "identity": "https://github.com/supermarioyl/cachepin",
+  "primary": "#df56e6",
+  "secondary": "#e76aaa",
+  "highlight": "#d7acf6",
+  "dark": {
+    "bg": "#0a0712",
+    "panel": "#13101f",
+    "code": "#130d1d",
+    "ink": "#f7eefd",
+    "muted": "#b19cc4",
+    "line": "#391841",
+    "primary": "#df56e6",
+    "secondary": "#e76aaa",
+    "highlight": "#d7acf6",
+    "accent": "#df56e6",
+    "buttonStart": "#b747bd",
+    "buttonEnd": "#b85488",
+    "buttonText": "#ffffff"
+  },
+  "light": {
+    "bg": "#fef9fe",
+    "panel": "#fdf7fe",
+    "code": "#fdf3fd",
+    "ink": "#261630",
+    "muted": "#715e88",
+    "line": "#f5cbf7",
+    "primary": "#af43b5",
+    "secondary": "#af5081",
+    "highlight": "#816794",
+    "accent": "#af43b5",
+    "buttonStart": "#b747bd",
+    "buttonEnd": "#b85488",
+    "buttonText": "#ffffff"
+  }
+}

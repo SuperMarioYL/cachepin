@@ -1,182 +1,128 @@
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./assets/hero-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="./assets/hero-light.svg">
-    <img src="./assets/hero-light.svg" width="880" alt="CachePin — keep your coding agent's KV Cache alive across turns" />
-  </picture>
-</p>
+[简体中文](./README.zh-CN.md) · [Website](https://cachepin.lei6393.com) · [GitHub](https://github.com/SuperMarioYL/cachepin)
 
-<p align="center"><strong>English</strong> | <a href="./README.zh-CN.md">简体中文</a></p>
+<picture>
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="./assets/presentation/hero-mobile-dark.svg">
+  <source media="(max-width: 600px)" srcset="./assets/presentation/hero-mobile-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/presentation/hero-dark.svg">
+  <img src="./assets/presentation/hero-light.svg" width="960" alt="Hero diagram">
+</picture>
 
-<p align="center">
-  <a href="./LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="Apache License 2.0" /></a>
-  <a href="https://github.com/SuperMarioYL/cachepin/releases"><img src="https://img.shields.io/badge/release-v0.7.0-6d28d9.svg" alt="release v0.7.0" /></a>
-  <a href="https://github.com/SuperMarioYL/cachepin/actions"><img src="https://img.shields.io/badge/CI-go%20build%20%2B%20test-success.svg" alt="CI" /></a>
-  <img src="https://img.shields.io/badge/go-1.24-00ADD8.svg" alt="Go 1.24" />
-  <img src="https://img.shields.io/badge/KV%20Cache-pinned-6d28d9.svg" alt="KV Cache" />
-  <img src="https://img.shields.io/badge/Coding%20Agent-neutral-14b8a6.svg" alt="Coding Agent" />
-</p>
+# cachepin
 
-> A single Go binary you drop between your **Coding Agent** harness and your OpenAI-compatible model server. It measures — and, with `--pin`, protects — the server-side **KV Cache** your harness keeps silently invalidating.
+**See when a harness rewrites conversation history.**
 
-> **CachePin v0.7.0** — `--pin` now survives system-prompt re-renders (session-id no longer forks when the harness re-renders the system message, so a tool-schema reorder or context compaction no longer reports silent-green `100% preserved | 0 reprocessed` while the upstream reprocesses everything), and the proxy is slowloris-hardened (`ReadHeaderTimeout`/`IdleTimeout` so a slow or dangling client can no longer hold a server goroutine forever). 3-step quickstart below. ★ [star on GitHub](https://github.com/SuperMarioYL/cachepin) if this would save you tokens.
+CachePin tracks message prefixes between requests and optionally rewrites mutated histories into append-only extensions of its canonical history.
 
-## Why now
+## Why use it
 
-If you self-host a model (llama.cpp, vLLM) and drive it with a **Coding Agent** harness like Claude Code, Cursor, or opencode, you've paid this tax: the harness re-renders a tool result or compacts context, your message array changes at message 3, and the inference server's **KV Cache** invalidates from that point on — so it silently reprocesses 30k+ tokens every single turn. [@CreativelyBankrupt](https://twitter.com/CreativelyBankrupt) has been pointing at exactly this prefix-cache fragility; the r/LocalLLaMA "checkpoints" thread and bespoke agents like [Hmbown/CodeWhale](https://github.com/Hmbown/CodeWhale) work around it one harness at a time. CachePin is the portable version of that idea: a harness-neutral proxy that sits in front of *any* OpenAI-compatible server, shows you the exact mutation boundary, and pins requests back to append-only form so the cache survives. No agent fork, no model lock-in — point `OPENAI_BASE_URL` at it and keep working.
+A reordered or rewritten early message changes the input prefix even when most of the conversation looks unchanged. Message-level tracking makes that mutation visible before you interpret cache behavior.
 
-## <img src="https://api.iconify.design/tabler:topology-star-3.svg?color=%236d28d9&width=24" height="22" align="absmiddle" alt=""> Architecture
+- **Locate mutation boundaries** — The common-prefix index points to the first changed message.
+- **Inspect rewrite semantics** — Canonical history and appended suffix are explicit.
+- **Use an HTTP boundary** — The proxy sits between a harness and its compatible endpoint.
 
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="./assets/atlas-dark.svg">
-    <source media="(prefers-color-scheme: light)" srcset="./assets/atlas-light.svg">
-    <img src="./assets/atlas-light.svg" width="880" alt="A coding-agent harness sends OpenAI-compatible requests to the CachePin proxy, whose session tracker content-hashes each message to find the longest-common-prefix mutation boundary; pin mode reconciles mutated turns to append-only form; metrics are emitted per turn; requests forward to the upstream model server whose KV cache survives">
-  </picture>
-</p>
+## Architecture
 
-Your coding agent points `OPENAI_BASE_URL` at CachePin instead of the model server. Inside the proxy boundary, the **session tracker** content-hashes every message and computes the longest common prefix against the canonical history — that boundary is exactly where the upstream prefix cache stops being valid. The **metrics** unit emits preserved-prefix %, reprocessed tokens, and the mutation index per turn; with `--pin` the **reconciler** rewrites a mutated request back to append-only form so the server-side **KV Cache** survives. Streaming `/v1/chat/completions` responses are relayed chunk-by-chunk, so the harness can't tell the proxy is there.
+<picture>
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="./assets/presentation/architecture-mobile-dark.svg">
+  <source media="(max-width: 600px)" srcset="./assets/presentation/architecture-mobile-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/presentation/architecture-dark.svg">
+  <img src="./assets/presentation/architecture-light.svg" width="960" alt="Architecture diagram">
+</picture>
 
-## Table of contents
+The proxy parses chat requests while preserving unknown fields. Session tracking hashes messages and finds the longest common prefix. In pin mode, reconciliation preserves the entire canonical history and appends the incoming suffix from the mutation boundary.
 
-- [Quickstart (10 minutes)](#quickstart-10-minutes)
-- [Demo](#demo)
-- [What you'll see](#what-youll-see)
-- [How it works](#how-it-works)
-- [Configuration](#configuration)
-- [Benchmark](#benchmark)
-- [vs CodeWhale](#vs-codewhale)
-- [Roadmap](#roadmap)
-- [Contributing](#contributing)
-- [License](#license)
-- [Share this](#share-this)
+| Component | Responsibility |
+| --- | --- |
+| `Chat proxy` | internal/proxy |
+| `Message tracker` | internal/session |
+| `History reconciler` | internal/pin |
+| `Prefix metrics` | internal/metrics |
 
-## Quickstart (10 minutes)
+## Install and quickstart
+
+Build with the version declared in the repository manifest. Run the example from the repository root.
 
 ```bash
-# 1. install the single binary
-go install github.com/SuperMarioYL/cachepin/cmd/cachepin@latest
-
-# 2. point it at your OpenAI-compatible server (llama.cpp, vLLM, ...)
-cachepin --upstream http://localhost:8080      # listens on :8089
-
-# 3. tell your coding agent to talk through CachePin
-export OPENAI_BASE_URL=http://localhost:8089
+git clone https://github.com/SuperMarioYL/cachepin.git
+cd cachepin
+go build ./cmd/cachepin
 ```
 
-Use your coding agent exactly as before. CachePin prints one line per turn; nothing else changes. When you want the cache *protected* instead of just *measured*, restart with `--pin`.
+Compare two explicit histories where an assistant answer changes, then print exactly what the production reconciler retains and appends.
 
-## <img src="https://api.iconify.design/tabler:photo.svg?color=%236d28d9&width=24" height="22" align="absmiddle" alt=""> Demo
-
-![CachePin demo — reprocessed tokens collapse to ~0 once --pin is on](assets/demo.gif)
-
-The [VHS tape](./docs/demo.tape) records the happy path: start CachePin in measure-only mode, watch a mutated turn reprocess ~31k tokens, then restart with `--pin` and watch the same turn drop back to zero.
-
-## What you'll see
-
-A clean, append-only session reuses the whole prefix:
-
-```
-turn 12 | prefix preserved 100% | 0 tokens reprocessed
+```bash
+go run ./examples/presentation-demo
 ```
 
-When the harness rewrites history, CachePin names the exact boundary — and the
-**context-layout linter** pinpoints the precise byte offset and the message field
-that broke prefix-stability (the system prompt, a re-ordered tool schema, a
-whitespace re-render, …):
+## Recorded demo
 
-```
-turn 13 | prefix preserved 41% | ~31k tokens reprocessed | MUTATION at msg[3] | content broke prefix at byte 14237
-```
+<picture>
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="./assets/presentation/process-mobile-dark.svg">
+  <source media="(max-width: 600px)" srcset="./assets/presentation/process-mobile-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/presentation/process-dark.svg">
+  <img src="./assets/presentation/process-light.svg" width="960" alt="Process diagram">
+</picture>
 
-Add `--pin` and the same mutated turn is reconciled to append-only form before it reaches the server, so the **KV Cache** survives and the reprocessed count drops back toward zero. The per-turn line under `--pin` now matches the benchmark exactly — a reconciled turn reports `0 tokens reprocessed`, so a `--ndjson` dashboard reflects upstream reality instead of the raw mutation.
+Reconciliation expands four incoming messages to five by retaining the old answer and appending the changed suffix.
 
-<details>
-<summary>machine-readable output (<code>--ndjson</code>)</summary>
-
-```json
-{"ts":"2026-06-22T12:00:00Z","session_id":"a1b2c3","turn":13,"preserved_prefix_pct":41.0,"reprocessed_tokens":31000,"total_tokens":52000,"mutated":true,"mutation_index":3,"prev_len":24,"incoming_len":26,"lcp":3,"layout_diverged":true,"layout_byte_offset":14237,"layout_msg_index":3,"layout_field":"content"}
-```
-
-One JSON object per line — the same stream the benchmark and any dashboard you build consume. The `layout_*` fields are the linter's byte-level diagnosis: `layout_field` is one of `role`, `content`, `name`, `tool_calls`, `tool_call_id`, `field-order` (JSON framing / key order changed), or `message-count` (an earlier message was dropped).
-</details>
-
-## How it works
-
-The core primitive is a **canonical append-only session history** plus one contract: every forwarded request's message array must be a *prefix-extension* of it. CachePin content-hashes each message, computes the longest common prefix against the canonical history, and that boundary is exactly where the server's prefix cache stops being valid. The **context-layout linter** then drills into that boundary at the byte level and names which field broke prefix-stability, so you can fix the cache-busting churn at its source.
-
-```
-harness ──HTTP──▶ proxy ──▶ session tracker ──▶ metrics ──▶ stdout / NDJSON
-                    │              │
-                    │        pin/reconcile (when --pin)
-                    ▼
-             upstream model server (llama.cpp / vLLM / API)
+```text
+common prefix: 2 messages
+rewritten: true
+message count: 4 -> 5
+0 system "Be precise."
+1 user "Review code."
+2 assistant "Original answer."
+3 assistant "Corrected answer."
+4 user "Continue."
 ```
 
-One binary, one process, standard library only — no containers, no Kubernetes, no model-specific tokenizer. Streaming `/v1/chat/completions` responses (SSE) pass through chunk-by-chunk, so the harness can't tell CachePin is there.
+The complete command and output are recorded in [docs/demo-results.json](./docs/demo-results.json). Inputs and reproduction code are included in the repository.
+
+![Existing terminal recording](./assets/demo.gif)
+
+The existing recording is retained for context; the text example above documents the reproducible scenario.
+
+## Usage
+
+The CLI exposes the following operations. Commands after the example use your own paths or identifiers.
+
+```bash
+go run ./cmd/cachepin --upstream http://localhost:8080
+# Enable only after reviewing append-only semantics:
+go run ./cmd/cachepin --upstream http://localhost:8080 --pin
+```
 
 ## Configuration
 
-CachePin is configured entirely by flags — no config file.
+Configure the upstream server and point the harness base URL at CachePin’s listener. Pin mode is opt-in. Use explicit session identity when the harness supports it and inspect the request semantics before enabling rewrites.
 
-| Flag | Type | Default | Meaning |
-| --- | --- | --- | --- |
-| `--upstream` | string | *(required)* | Base URL of the OpenAI-compatible model server, e.g. `http://localhost:8080` |
-| `--listen` | string | `:8089` | Address CachePin's proxy binds to |
-| `--pin` | bool | `false` | Reconcile mutated requests to append-only form so the upstream KV Cache survives |
-| `--ndjson` | string | *(off)* | Path to also write one machine-readable metrics object per turn (opened in **append** mode, so restarts accumulate) |
-| `--max-sessions` | int | `1024` | Cap on tracked conversations; the least-recently-used session is evicted past it (`0` = unbounded) |
-| `--idle-ttl` | duration | `0` | Evict sessions whose last turn is older than this (e.g. `10m`, `1h`); `0` keeps only the `--max-sessions` count cap |
+## Integrations and responsibilities
 
-CachePin holds session state in memory per process and never persists it to disk. The `--max-sessions` cap keeps that footprint bounded for a long-lived or shared deployment — past it the idlest session is evicted, so memory does not grow without limit as new conversations arrive. `--idle-ttl` additionally expires sessions that have simply gone quiet, so a sparse long-uptime deployment keeps memory bounded even with zero new traffic. If `--pin` is on and a session's canonical was lost to eviction, the next turn for it is forwarded unreconciled with an explicit `WARN: canonical evicted` line (and a `pin_coverage_lost:true` NDJSON field) so you know to raise `--max-sessions`.
+<picture>
+  <source media="(max-width: 600px) and (prefers-color-scheme: dark)" srcset="./assets/presentation/integrations-mobile-dark.svg">
+  <source media="(max-width: 600px)" srcset="./assets/presentation/integrations-mobile-light.svg">
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/presentation/integrations-dark.svg">
+  <img src="./assets/presentation/integrations-light.svg" width="960" alt="Integrations diagram">
+</picture>
 
-## Benchmark
+The following routes are implemented in the source. Choose the input that matches your task and keep the resulting artifact with your project.
 
-Reproduce the before/after chart yourself — it replays a fixed 50-turn transcript whose harness rewrites an early message every turn, once without pinning and once with:
+| Route | Implemented role |
+| --- | --- |
+| Chat completions HTTP | OpenAI-compatible proxy route |
+| Message arrays | Content and extension fields |
+| Streaming responses | Chunk forwarding |
+| Terminal metrics | Prefix and token estimates |
 
-```bash
-go run ./bench -turns 50 -out chart.csv
-```
+## Limits and next steps
 
-It writes `turn,reprocessed_no_pin,reprocessed_pin,cumulative_no_pin,cumulative_pin` as CSV and prints a savings summary to stderr. The whole point: the curve that climbs linearly without `--pin` goes flat with it.
+- Prefix percentages and reprocessed-token values are message-based observations and estimates, not direct KV cache telemetry.
+- --pin changes request semantics: an edited or removed earlier message can remain in canonical history, and appended content can increase context length.
+- The demo only reconciles message arrays; it does not establish server cache reuse or throughput savings.
 
-## vs CodeWhale
+Direct server cache measurements and harness-specific integration tests are separate validation work.
 
-Honest positioning — CachePin is a shim, not a competing agent.
+## License and contributions
 
-| | CachePin | [Hmbown/CodeWhale](https://github.com/Hmbown/CodeWhale) |
-| --- | --- | --- |
-| Harness-neutral (works with Claude Code, Cursor, opencode) | ✓ | ✗ (is its own agent) |
-| Full coding-agent experience (planning, tools, edits) | ✗ (proxy only) | ✓ |
-| Pins KV Cache across *any* OpenAI-compatible server | ✓ | partial (its own model path) |
-| Drop-in: keep your current agent | ✓ | ✗ (you switch agents) |
-| Measures the exact mutation boundary | ✓ | — |
-
-If you want a batteries-included agent, CodeWhale is the better answer. If you want to keep the agent you already use and just stop burning the cache, that's CachePin.
-
-## Roadmap
-
-- [x] **m1 — proxy passthrough**: transparent OpenAI-compatible reverse proxy with SSE streaming; the harness can't tell it's there.
-- [x] **m2 — track & report**: per-session canonical-history tracker emitting preserved-prefix %, reprocessed tokens, and mutation events per turn.
-- [x] **m3 — pin & bench**: `--pin` reconciliation that keeps the upstream KV Cache alive, plus the reproducible 50-turn benchmark.
-- [x] **m4 — context-layout linter** *(v0.2.0, deepened v0.3.0)*: byte-level prefix diff that names the exact offset and field that broke prefix-stability. v0.3.0 makes its pinpoint coordinates always present (offset 0 / `msg[0]` preserved, no-divergence unified to `-1`) so every turn emits a consistent field set.
-- [x] **v0.3.0 hardening**: guard the session store against concurrent multi-session traffic, make `--pin` per-turn metrics match the benchmark, and bound memory with LRU session eviction (`--max-sessions`).
-- [x] **v0.4.0 hardening**: make `--ndjson` survive restarts and concurrent multi-session writes (append + a write mutex), warn when `--pin` coverage is voided by eviction instead of reporting silent-green metrics, and add `--idle-ttl` so idle sessions expire even without new traffic.
-- [x] **v0.5.0 hardening**: idle sessions now expire on every `Observe` (not only on new-session creation), and `--pin`'s Canonical→Reconcile→Observe is atomic per request so a same-session concurrent turn can no longer be silently dropped.
-- [x] **v0.6.0 hardening**: redact upstream URL credentials from 502 error responses and the startup log (`RedactedUpstream`), so an API key in `--upstream http://sk-xxx@host` never lands in a 502 body or captured stdout.
-- [x] **v0.7.0 fixes**: `--pin` survives system-prompt re-renders — session-id is now derived from the first user message only, so a harness re-rendering the system prompt (context compaction, a tool-schema reorder) no longer forks the session and reports silent-green `100% preserved | 0 reprocessed`; the tracker now catches it as a content divergence at `msg[0]` and `--pin` gets a real prior canonical to reconcile against. The proxy is also slowloris-hardened: an explicit `http.Server` sets `ReadHeaderTimeout`/`IdleTimeout` (WriteTimeout stays zero so SSE streams are not cut off mid-token).
-- [ ] **Future**: protocol spec for harness ↔ server append-only context; ecosystem docs links.
-
-## Contributing
-
-Issues and PRs welcome — file an issue describing your harness + server combo and the mutation you're seeing, and attach the `--ndjson` output if you can. It makes the boundary obvious.
-
-## License
-
-Apache-2.0 © 2026 SuperMarioYL
-
-## Share this
-
-```
-CachePin v0.7.0 — --pin now survives system-prompt re-renders (session-id no longer forks) and the proxy is slowloris-hardened (ReadHeaderTimeout/IdleTimeout). The harness-neutral Go proxy that keeps your Coding Agent's KV Cache alive across turns. Self-hosting llama.cpp/vLLM and reprocessing 30k tokens every turn? Point OPENAI_BASE_URL at it. Go, 10-min drop-in. https://github.com/SuperMarioYL/cachepin  ★ star if it'd save you tokens.
-```
+See [LICENSE](./LICENSE). When reporting an issue, include a minimal input, the command, and the observed output.

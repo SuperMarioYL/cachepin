@@ -1,0 +1,78 @@
+{
+  "name": "cachepin",
+  "tagline": "See when a harness rewrites conversation history.",
+  "architecture": {
+    "title": "How CachePin works",
+    "nodes": [
+      {
+        "title": "Chat proxy",
+        "detail": "internal/proxy"
+      },
+      {
+        "title": "Message tracker",
+        "detail": "internal/session"
+      },
+      {
+        "title": "History reconciler",
+        "detail": "internal/pin"
+      },
+      {
+        "title": "Prefix metrics",
+        "detail": "internal/metrics"
+      }
+    ],
+    "edges": [
+      [
+        0,
+        1
+      ],
+      [
+        1,
+        2
+      ],
+      [
+        2,
+        3
+      ]
+    ]
+  },
+  "process": {
+    "title": "From input to a useful result",
+    "steps": [
+      {
+        "title": "Compare histories",
+        "detail": "Two common messages"
+      },
+      {
+        "title": "Retain canonical",
+        "detail": "Original answer remains"
+      },
+      {
+        "title": "Append suffix",
+        "detail": "Correction and new user turn"
+      }
+    ],
+    "result": "Reconciliation expands four incoming messages to five by retaining the old answer and appending the changed suffix."
+  },
+  "integrations": {
+    "title": "Supported input and output routes",
+    "items": [
+      {
+        "title": "Chat completions HTTP",
+        "detail": "OpenAI-compatible proxy route"
+      },
+      {
+        "title": "Message arrays",
+        "detail": "Content and extension fields"
+      },
+      {
+        "title": "Streaming responses",
+        "detail": "Chunk forwarding"
+      },
+      {
+        "title": "Terminal metrics",
+        "detail": "Prefix and token estimates"
+      }
+    ]
+  }
+}
