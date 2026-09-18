@@ -224,8 +224,14 @@
       }
     ]
   },
-  "content_version": "0.10.0",
+  "content_version": "0.11.0",
   "changelog": [
+    {
+      "version": "v0.11.0",
+      "date": "2026-09-19",
+      "zh": "v0.11.0：SIGINT/SIGTERM 现在走优雅停机——进行中的请求（含 SSE 流式生成）有 30 秒排空窗口完成，而不是随进程被掐断。",
+      "en": "v0.11.0: SIGINT/SIGTERM now drain gracefully — in-flight requests (including streaming generations) get a 30-second window to finish instead of being cut with the process."
+    },
     {
       "version": "v0.10.0",
       "date": "2026-09-04",

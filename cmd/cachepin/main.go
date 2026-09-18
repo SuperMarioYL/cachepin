@@ -11,11 +11,15 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
 	"os"
+	"os/signal"
+	"syscall"
 	"time"
 
 	"github.com/SuperMarioYL/cachepin"
@@ -125,7 +129,43 @@ func run(cfg Config) error {
 	}
 
 	fmt.Printf("cachepin listening on %s -> upstream %s (pin=%v, max-sessions=%d, idle-ttl=%s)\n", cfg.Listen, proxy.RedactedUpstream(cfg.Upstream), cfg.Pin, cfg.MaxSessions, cfg.IdleTTL)
-	return newHTTPServer(cfg.Listen, p).ListenAndServe()
+	srv := newHTTPServer(cfg.Listen, p)
+	shutdownOnSignal(srv, shutdownGrace)
+	listenErr := srv.ListenAndServe()
+	// Shutdown makes ListenAndServe return ErrServerClosed; that is the clean
+	// exit, not an error to report.
+	if errors.Is(listenErr, http.ErrServerClosed) {
+		return nil
+	}
+	return listenErr
+}
+
+// shutdownGrace is the drain window Shutdown gives in-flight requests — SSE
+// streams included — before it force-closes remaining connections. 30s covers
+// a long generation tail without letting a stuck stream pin the process open.
+const shutdownGrace = 30 * time.Second
+
+// shutdownOnSignal wires SIGINT/SIGTERM to srv.Shutdown (v0.11.0,
+// fix-sigint-kills-inflight-requests). Before it, run blocked on a bare
+// ListenAndServe and Ctrl-C aborted the process instantly: in-flight requests
+// — including streaming /chat/completions generations mid-token — were cut,
+// and the deferred NDJSON sink close never ran. Shutdown waits for handlers
+// (bounded by the grace window), so a deploy/restart drains instead of
+// truncating. Extracted with a signal-channel parameter so the wiring is
+// unit-testable without sending a real signal.
+func shutdownOnSignal(srv *http.Server, grace time.Duration) <-chan struct{} {
+	done := make(chan struct{})
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		defer close(done)
+		defer signal.Stop(sig)
+		<-sig
+		ctx, cancel := context.WithTimeout(context.Background(), grace)
+		defer cancel()
+		_ = srv.Shutdown(ctx)
+	}()
+	return done
 }
 
 // newHTTPServer builds the front-facing listener with hardening timeouts

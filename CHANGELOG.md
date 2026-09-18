@@ -4,6 +4,26 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.11.0] - 2026-09-19
+
+This release fixes the process-lifecycle bug class: a long-running proxy that
+aborts in-flight requests on Ctrl-C. With 0 open GitHub issues (cold-start),
+v0.11.0 stays bug-hunt anchored, no new breadth.
+
+### Fixed
+
+- **SIGINT/SIGTERM now drain gracefully instead of killing in-flight requests**
+  (milestone `fix-sigint-kills-inflight-requests`). `run` blocked on a bare
+  `ListenAndServe` with the default signal disposition, so Ctrl-C (or a
+  supervisor's SIGTERM during a deploy/restart) aborted the process instantly:
+  in-flight requests — including streaming `/chat/completions` generations
+  mid-token — were cut off, and the deferred NDJSON sink close never ran.
+  `shutdownOnSignal` now wires both signals to `http.Server.Shutdown` with a
+  30-second drain window: handlers (SSE streams included) finish, remaining
+  connections close, and `ErrServerClosed` is reported as a clean exit. A
+  regression test proves the drain itself — an in-flight request held open
+  across SIGTERM completes only after the handler releases it.
+
 ## [0.10.0] - 2026-09-04
 
 This release fixes the version-drift bug class: the shipped code's version

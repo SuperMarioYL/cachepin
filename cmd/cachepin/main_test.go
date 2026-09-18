@@ -5,11 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -545,4 +547,72 @@ func TestWriteVersionPrintsEmbeddedVersion(t *testing.T) {
 	if version.Version == "" {
 		t.Errorf("version.Version is empty; the embed did not populate the version")
 	}
+}
+
+// TestShutdownOnSignalDrainsServer guards fix-sigint-kills-inflight-requests:
+// wiring shutdownOnSignal must make an in-flight request survive SIGTERM —
+// Shutdown waits for the handler to finish instead of the process aborting
+// mid-request the way a bare ListenAndServe + default signal disposition did.
+func TestShutdownOnSignalDrainsServer(t *testing.T) {
+	handlerDone := make(chan struct{})
+	srv := &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// hold the response open until the test says the signal landed
+		<-handlerDone
+		w.WriteHeader(http.StatusOK)
+	})}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	done := shutdownOnSignal(srv, 2*time.Second)
+	go func() { _ = srv.Serve(listener) }()
+
+	respCh := make(chan *http.Response, 1)
+	go func() {
+		resp, err := http.Get(fmt.Sprintf("http://%s/", listener.Addr().String()))
+		if err != nil {
+			t.Errorf("in-flight request failed: %v", err)
+			close(handlerDone)
+			return
+		}
+		respCh <- resp
+	}()
+
+	// let the request reach the handler, then fire the shutdown signal
+	time.Sleep(100 * time.Millisecond)
+	proc, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := proc.Signal(syscall.SIGTERM); err != nil {
+		t.Fatal(err)
+	}
+
+	// the handler is still holding the request open; give Shutdown a moment
+	// to prove it is WAITING (draining) rather than killing.
+	select {
+	case <-respCh:
+		t.Fatal("handler released before the test allowed it — nothing was proven about draining")
+	case <-time.After(300 * time.Millisecond):
+		// good: request still alive under drain
+	}
+
+	// release the handler; the request must now complete and Shutdown must return
+	close(handlerDone)
+	select {
+	case resp := <-respCh:
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("in-flight request status = %d", resp.StatusCode)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight request never completed under Shutdown drain")
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("shutdownOnSignal never returned")
+	}
+	_ = srv.Close()
 }
