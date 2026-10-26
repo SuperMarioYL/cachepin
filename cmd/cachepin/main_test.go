@@ -3,6 +3,8 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"net"
@@ -615,4 +617,38 @@ func TestShutdownOnSignalDrainsServer(t *testing.T) {
 		t.Fatal("shutdownOnSignal never returned")
 	}
 	_ = srv.Close()
+}
+
+// TestHelpRequestIsACleanExit is the regression test for
+// fix-cli-help-exits-nonzero (v0.12.0). parseFlags uses flag.ContinueOnError,
+// so --help / -h makes Parse return flag.ErrHelp after the flag package has
+// already printed the usage block. Before the fix main treated that like every
+// other parse error: it printed "cachepin: flag: help requested" on top of the
+// usage block and exited 2. A help request must map to exit 0; every real usage
+// error still exits 2.
+func TestHelpRequestIsACleanExit(t *testing.T) {
+	for _, arg := range []string{"--help", "-h"} {
+		_, err := parseFlags([]string{arg})
+		if err == nil {
+			t.Fatalf("parseFlags(%q) = nil error, want flag.ErrHelp", arg)
+		}
+		if !errors.Is(err, flag.ErrHelp) {
+			t.Errorf("parseFlags(%q) error = %v, want flag.ErrHelp", arg, err)
+		}
+		if got := parseFailureExitCode(err); got != 0 {
+			t.Errorf("parseFailureExitCode(flag.ErrHelp) = %d, want 0 (help is a clean exit)", got)
+		}
+	}
+
+	// Real usage errors keep the exit-2 contract.
+	if _, err := parseFlags([]string{"--nope"}); err == nil {
+		t.Error("parseFlags(--nope) = nil error, want an unknown-flag error")
+	} else if got := parseFailureExitCode(err); got != 2 {
+		t.Errorf("parseFailureExitCode(unknown flag) = %d, want 2", got)
+	}
+	if _, err := parseFlags(nil); err == nil {
+		t.Error("parseFlags() = nil error, want the --upstream-required error")
+	} else if got := parseFailureExitCode(err); got != 2 {
+		t.Errorf("parseFailureExitCode(missing --upstream) = %d, want 2", got)
+	}
 }

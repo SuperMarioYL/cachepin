@@ -293,6 +293,60 @@ func TestRedactedUpstreamStripsUserinfo(t *testing.T) {
 	}
 }
 
+// TestRedactedUpstreamStripsQueryCredential is the regression test for
+// fix-redacted-upstream-query-credential (v0.12.0). The v0.6.0 redaction closed
+// the userinfo channel but left the query string, which is where an
+// OpenAI-compatible gateway key commonly rides (?api_key=...) and which the
+// reverse proxy forwards on every request. On the v0.11.0 tag
+// RedactedUpstream("http://localhost:8080?api_key=sk-SECRET123") returned the
+// input unchanged, so the startup log and every 502 body carried the key.
+func TestRedactedUpstreamStripsQueryCredential(t *testing.T) {
+	cases := map[string]string{
+		"http://localhost:8080?api_key=sk-SECRET123":    "http://localhost:8080",
+		"http://localhost:8080/v1?api_key=sk-SECRET123": "http://localhost:8080/v1",
+		"http://user:pw@host:8080/v1?api_key=sk-SECRET": "http://host:8080/v1",
+		"http://localhost:8080/v1?timeout=5":            "http://localhost:8080/v1", // any query, not just key-looking params
+		"http://localhost:8080":                         "http://localhost:8080",    // no query, unchanged
+	}
+	for raw, want := range cases {
+		got := RedactedUpstream(raw)
+		if got != want {
+			t.Errorf("RedactedUpstream(%q) = %q, want %q", raw, got, want)
+		}
+		if strings.Contains(got, "SECRET") || strings.Contains(got, "api_key") {
+			t.Errorf("RedactedUpstream(%q) leaked a query credential: %q", raw, got)
+		}
+	}
+}
+
+// TestErrorHandlerRedactsQueryCredential is the end-to-end companion to
+// TestErrorHandlerRedactsUpstreamCredentials for the query-string channel: a
+// 502 body must not carry an upstream's ?api_key=... either.
+func TestErrorHandlerRedactsQueryCredential(t *testing.T) {
+	p, err := New("http://127.0.0.1:1?api_key=sk-SECRET123")
+	if err != nil {
+		t.Fatal(err)
+	}
+	front := httptest.NewServer(p)
+	defer front.Close()
+
+	resp, err := http.Get(front.URL + "/v1/chat/completions")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusBadGateway {
+		t.Errorf("status = %d, want %d for unreachable upstream", resp.StatusCode, http.StatusBadGateway)
+	}
+	if strings.Contains(string(body), "SECRET") {
+		t.Errorf("502 body leaked upstream query credential: %q", string(body))
+	}
+	if !strings.Contains(string(body), "127.0.0.1:1") {
+		t.Errorf("502 body should still name the upstream host; got %q", string(body))
+	}
+}
+
 // TestErrorHandlerRedactsUpstreamCredentials is the end-to-end regression test
 // for fix-upstream-credentials-leaked-in-error-and-log at proxy.go:107. An
 // upstream configured with userinfo (http://user:secret@remote) must not leak

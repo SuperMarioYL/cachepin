@@ -151,3 +151,71 @@ func TestLintLayoutDivergenceAtFirstByte(t *testing.T) {
 		t.Errorf("dropped-only-message coords = (%d,%d), want (0,0) preserved", d.ByteOffset, d.MessageIndex)
 	}
 }
+
+// TestLintLayoutNamesUnmodeledField is the regression test for
+// fix-linter-mislabels-raw-field-breaks (v0.12.0). wireBytes marshals through
+// Message.MarshalJSON, which emits the modeled fields in a fixed declaration
+// order and the raw passthrough fields sorted — so when every modeled field
+// matches, the difference is necessarily an unmodeled field. The v0.11.0 linter
+// fell through to its default branch and reported Field "field-order" with the
+// detail "field-order changed at byte N (msg[i])", misnaming the cache_control
+// break that v0.9.0 (fix-hash-ignores-raw-message-fields) folded raw into Hash
+// precisely so it would be detected. The linter must name the field that
+// actually changed.
+func TestLintLayoutNamesUnmodeledField(t *testing.T) {
+	// Identical modeled fields; only the unmodeled cache_control differs.
+	canonical := mustParseMessages(t, `[{"role":"system","content":"s","cache_control":{"type":"ephemeral","ttl":"5m"}}]`)
+	incoming := mustParseMessages(t, `[{"role":"system","content":"s","cache_control":{"type":"ephemeral","ttl":"1h"}}]`)
+
+	// The break must be real at the message level too: raw is folded into Hash
+	// (v0.9.0), so the prefix genuinely broke.
+	if lcp := longestCommonPrefixHashes(canonical, incoming); lcp != 0 {
+		t.Fatalf("LCP = %d, want 0 (the raw-field change must break the prefix)", lcp)
+	}
+
+	d := LintLayout(canonical, incoming)
+	if !d.Diverged {
+		t.Fatal("Diverged = false, want true for a cache_control change")
+	}
+	if d.MessageIndex != 0 {
+		t.Errorf("MessageIndex = %d, want 0", d.MessageIndex)
+	}
+	if d.Field != "cache_control" {
+		t.Errorf("Field = %q, want the unmodeled field name %q (not the blanket \"field-order\")", d.Field, "cache_control")
+	}
+
+	// A provider extension is named just as precisely, and a raw field present
+	// on only one side is a difference too.
+	onlyA := mustParseMessages(t, `[{"role":"user","content":"x","provider_meta":{"a":1}}]`)
+	onlyB := mustParseMessages(t, `[{"role":"user","content":"x"}]`)
+	if d := LintLayout(onlyA, onlyB); d.Field != "provider_meta" {
+		t.Errorf("Field = %q, want provider_meta for a field present on one side", d.Field)
+	}
+}
+
+// longestCommonPrefixHashes mirrors session.LongestCommonPrefix without
+// importing the session package (which imports openai, so the edge would be a
+// cycle). It exists only to assert the linter and the hash-based prefix diff
+// agree that a raw-field change broke the prefix.
+func longestCommonPrefixHashes(a, b []Message) int {
+	n := len(a)
+	if len(b) < n {
+		n = len(b)
+	}
+	i := 0
+	for i < n && a[i].Hash() == b[i].Hash() {
+		i++
+	}
+	return i
+}
+
+// mustParseMessages parses a JSON message array through the production parser
+// so the raw passthrough map is populated the way a real request populates it.
+func mustParseMessages(t *testing.T, body string) []Message {
+	t.Helper()
+	req, err := ParseChatRequest([]byte(`{"messages":` + body + `}`))
+	if err != nil {
+		t.Fatalf("ParseChatRequest(%s): %v", body, err)
+	}
+	return req.Messages
+}

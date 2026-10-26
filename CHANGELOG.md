@@ -4,6 +4,64 @@ All notable changes to this project are documented here. The format is based on
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-10-27
+
+This release fixes four defects found by reading the shipped v0.11.0 source and
+reproducing them against the tag, plus one lockstep guard. With 0 open GitHub
+issues (cold-start), v0.12.0 stays bug-hunt anchored, no new breadth.
+
+### Fixed
+
+- **The upstream redaction now drops query-string credentials, not just
+  userinfo** (milestone `fix-redacted-upstream-query-credential`).
+  `RedactedUpstream` (`internal/proxy/proxy.go`) exists so an authenticated
+  upstream never leaks its credential into the startup log or a 502 body, and it
+  dropped `url.User` — but an OpenAI-compatible gateway key commonly rides in the
+  query as `?api_key=...`, which the reverse proxy forwards on every request.
+  `cachepin --upstream 'http://localhost:8080?api_key=sk-SECRET123'` printed the
+  key in cleartext in the startup line, and the same string is interpolated into
+  every 502 body. The display URL now has its query cleared too; nothing
+  functional changes because the forwarded upstream keeps its query.
+
+- **`cachepin --help` / `-h` exits 0 instead of reporting a usage error**
+  (milestone `fix-cli-help-exits-nonzero`). `parseFlags` builds its `FlagSet`
+  with `flag.ContinueOnError`, so `--help` makes `Parse` return `flag.ErrHelp`
+  after the usage block is printed — but `main` treated every parse error as
+  fatal, printing `cachepin: flag: help requested` on top of the usage block and
+  exiting 2. A help request is a clean exit; every real usage error (unknown
+  flag, missing `--upstream`) still exits 2.
+
+- **The context-layout linter names the unmodeled field that broke the prefix**
+  (milestone `fix-linter-mislabels-raw-field-breaks`). `wireBytes` marshals
+  through `Message.MarshalJSON`, which emits the modeled fields in a fixed order
+  and the raw passthrough fields sorted — so when `firstDifferingField`
+  (`internal/openai/linter.go`) fell through to its default branch the
+  difference was always an unmodeled field, yet it reported `field-order` with
+  the detail "field-order changed at byte N (msg[i])". A `cache_control` change —
+  the exact break v0.9.0 folded `raw` into `Hash` to detect — was therefore
+  detected but misnamed. The linter now reports the differing field's own name
+  (e.g. `cache_control`).
+
+- **`ParseChatRequest` rejects trailing data after the JSON object**
+  (milestone `fix-parse-accepts-trailing-garbage`).
+  `internal/openai/messages.go` consumed the closing brace and stopped, so
+  `{"messages":[]} trailing-garbage` parsed clean — contradicting its own
+  comment, and in `--pin` mode silently deleting the accepted bytes from the
+  re-marshaled request. One end-of-input check now routes such a body to the
+  interceptor's documented fail-open path (forwarded untouched).
+
+### Quality
+
+- **The version-lockstep guard now covers the site changelog head**
+  (milestone `quality-lockstep-guard-site-changelog`). `TestVersionLockstep`
+  asserted `VERSION` == `web/site.json` `content_version` == `CHANGELOG.md` head
+  == the embedded `version.Version`, but not `web/site.json`'s own `changelog`
+  array — the second copy of the same fact that the site actually renders, and
+  the surface that sat frozen at `v0.7.0` across two releases. The test now also
+  asserts `changelog[0].version` == `"v" + VERSION`.
+
+[0.12.0]: https://github.com/SuperMarioYL/cachepin/releases/tag/v0.12.0
+
 ## [0.11.0] - 2026-09-19
 
 This release fixes the process-lifecycle bug class: a long-running proxy that

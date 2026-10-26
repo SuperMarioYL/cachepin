@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"sort"
 )
 
 // LayoutDiff is the result of the byte-level context-layout linter. It pinpoints
@@ -27,8 +28,9 @@ type LayoutDiff struct {
 	MessageIndex int
 	// Field names the message field that broke prefix-stability: one of
 	// "role", "content", "name", "tool_calls", "tool_call_id",
-	// "message-count", or "field-order" when the JSON object framing itself
-	// changed.
+	// "message-count", or the name of an unmodeled per-message field the
+	// harness changed (e.g. "cache_control", "function_call"). "field-order"
+	// is a last-resort fallback for a wire difference no field accounts for.
 	Field string
 	// Detail is a short human-readable summary, e.g.
 	// "content changed at byte 1423 (msg[3])".
@@ -127,11 +129,46 @@ func firstDifferingField(a, b Message) (field string, rel int) {
 	case a.ToolCallID != b.ToolCallID:
 		return "tool_call_id", rel
 	default:
-		// Same logical field values but different wire bytes: the JSON framing
-		// or field ordering differs (e.g. whitespace, key order from a
-		// re-render).
+		// Every modeled field matches, so the wire difference can only be in an
+		// unmodeled per-message field: wireBytes marshals through MarshalJSON,
+		// which emits the modeled fields in a fixed declaration order and the raw
+		// passthrough fields in sorted key order, so it is deterministic for a
+		// given set of modeled values. Name the field that actually changed
+		// (cache_control, function_call, a provider extension) instead of the old
+		// blanket "field-order" — which claimed the JSON framing changed, which it
+		// never can here (v0.12.0, fix-linter-mislabels-raw-field-breaks: v0.9.0
+		// folded raw into Hash precisely so this break is detected, and the
+		// linter then misnamed it).
+		if k := firstDifferingRawField(a, b); k != "" {
+			return k, rel
+		}
 		return "field-order", rel
 	}
+}
+
+// firstDifferingRawField returns the first unmodeled per-message field whose
+// presence or value differs between a and b, in sorted key order (matching the
+// order MarshalJSON emits raw fields and Hash folds them in), or "" when the raw
+// maps are identical. A key present on only one side differs by construction.
+func firstDifferingRawField(a, b Message) string {
+	keys := make([]string, 0, len(a.raw)+len(b.raw))
+	seen := make(map[string]struct{}, len(a.raw)+len(b.raw))
+	for _, m := range []map[string]json.RawMessage{a.raw, b.raw} {
+		for k := range m {
+			if _, ok := seen[k]; ok {
+				continue
+			}
+			seen[k] = struct{}{}
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	for _, k := range keys {
+		if !bytes.Equal(a.raw[k], b.raw[k]) {
+			return k
+		}
+	}
+	return ""
 }
 
 // commonBytePrefix returns the length of the longest shared leading byte run.

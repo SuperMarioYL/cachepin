@@ -62,8 +62,11 @@ type Config struct {
 func main() {
 	cfg, err := parseFlags(os.Args[1:])
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "cachepin:", err)
-		os.Exit(2)
+		code := parseFailureExitCode(err)
+		if code != 0 {
+			fmt.Fprintln(os.Stderr, "cachepin:", err)
+		}
+		os.Exit(code)
 	}
 
 	if cfg.ShowVersion {
@@ -85,6 +88,21 @@ func main() {
 // but package main had no such symbol, so the flag never existed.
 func writeVersion(w io.Writer) {
 	fmt.Fprintln(w, version.Version)
+}
+
+// parseFailureExitCode maps a parseFlags error to the process exit status. A
+// help request is a clean exit: with flag.ContinueOnError the flag package has
+// already printed the usage block to stderr, so `cachepin --help` / `-h` must
+// report success (0) rather than looking like a usage failure (2) — before
+// v0.12.0 (fix-cli-help-exits-nonzero) main treated flag.ErrHelp as a fatal
+// error and printed "cachepin: flag: help requested" on top of the usage block.
+// Extracted so the exit-code contract is unit-testable without spawning a
+// process. Every other parse error (unknown flag, missing --upstream) stays 2.
+func parseFailureExitCode(err error) int {
+	if errors.Is(err, flag.ErrHelp) {
+		return 0
+	}
+	return 2
 }
 
 func parseFlags(args []string) (Config, error) {

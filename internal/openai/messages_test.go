@@ -205,3 +205,38 @@ func TestMarshalPreservesReorderedTopLevelFields(t *testing.T) {
 		t.Errorf("re-marshal did not preserve (anti-alphabetical) field order;\n got: %s\nwant: %s", out, body)
 	}
 }
+
+// TestParseChatRequestRejectsTrailingData is the regression test for
+// fix-parse-accepts-trailing-garbage (v0.12.0). ParseChatRequest reads the
+// top-level object with a json.Decoder and, before the fix, consumed only the
+// closing brace — so anything after the object was silently ignored, despite
+// the code comment claiming a trailing token surfaces an error. On the v0.11.0
+// tag ParseChatRequest([]byte(`{"messages":[]} trailing-garbage`)) returned
+// err=nil, and in --pin mode the interceptor re-marshals the parsed struct, so
+// the accepted bytes were silently deleted from the forwarded request.
+func TestParseChatRequestRejectsTrailingData(t *testing.T) {
+	bad := []string{
+		`{"messages":[]} trailing-garbage`,
+		`{"messages":[]}{"second":true}`,
+		`{"messages":[]} 1`,
+	}
+	for _, body := range bad {
+		if _, err := ParseChatRequest([]byte(body)); err == nil {
+			t.Errorf("ParseChatRequest(%q) = nil error, want a trailing-data parse error", body)
+		}
+	}
+
+	// A well-formed body (including trailing whitespace/newlines, which the
+	// decoder skips) must still parse.
+	good := []string{
+		`{"messages":[]}`,
+		"{\"messages\":[]}\n",
+		"{\"messages\":[]}\n\t ",
+		`{"model":"m","messages":[{"role":"user","content":"u"}],"stream":true}`,
+	}
+	for _, body := range good {
+		if _, err := ParseChatRequest([]byte(body)); err != nil {
+			t.Errorf("ParseChatRequest(%q) = %v, want nil (well-formed body)", body, err)
+		}
+	}
+}

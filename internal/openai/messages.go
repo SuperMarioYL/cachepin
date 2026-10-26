@@ -11,6 +11,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"sort"
 )
 
@@ -250,10 +251,21 @@ func ParseChatRequest(body []byte) (*ChatRequest, error) {
 		raw[key] = v
 		order = append(order, key)
 	}
-	// Consume the closing brace so a trailing token surfaces an error rather than
-	// being silently ignored.
+	// Consume the closing brace, then require end-of-input: a body with data after
+	// the object is malformed and must not be silently accepted. Consuming only the
+	// brace (the pre-v0.12.0 behavior) let `{"messages":[]} trailing` parse clean —
+	// and in --pin mode the interceptor re-marshals the parsed struct, so the
+	// accepted trailing bytes were silently deleted from the forwarded request
+	// (v0.12.0, fix-parse-accepts-trailing-garbage). The decoder skips trailing
+	// whitespace, so a well-formed body still ends at io.EOF.
 	if _, err := dec.Token(); err != nil {
 		return nil, fmt.Errorf("openai: parse request body close: %w", err)
+	}
+	if tok, err := dec.Token(); err != io.EOF {
+		if err != nil {
+			return nil, fmt.Errorf("openai: parse request body: trailing data after JSON object: %w", err)
+		}
+		return nil, fmt.Errorf("openai: parse request body: trailing data after JSON object (%v)", tok)
 	}
 
 	req := &ChatRequest{raw: raw, order: order}

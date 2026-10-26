@@ -15,6 +15,15 @@ import (
 // "0.9.0", and the version package did not exist), which proves the drift was
 // real and unguarded. It runs from the repository root (the version package's
 // directory), so the version surfaces are read by their repo-relative paths.
+//
+// quality-lockstep-guard-site-changelog (v0.12.0) adds the site's own changelog
+// head: web/site.json carries a `changelog` array whose first entry is the
+// version the live site renders in its changelog list — a second, independently
+// editable copy of the same fact. It is the surface that historically drifted
+// (the whole site sat at v0.7.0 across the v0.8.0 and v0.9.0 releases), so a
+// release that bumped content_version but forgot this entry would ship an
+// internally inconsistent site with green CI. Asserting it here makes the guard
+// cover every copy of the version, not three of four.
 func TestVersionLockstep(t *testing.T) {
 	// 1. The canonical VERSION file (the embed source).
 	versionFile := mustReadTrim(t, "VERSION")
@@ -43,6 +52,13 @@ func TestVersionLockstep(t *testing.T) {
 		if got == "" {
 			t.Errorf("version surface %s is empty", label)
 		}
+	}
+
+	// 5. web/site.json changelog head — the entry the live site renders. It
+	//    carries the v prefix (a site-facing label), so it compares as
+	//    "v" + VERSION.
+	if got := siteChangelogHeadVersion(t, "web/site.json"); got != "v"+want {
+		t.Errorf("version drift: web/site.json changelog head = %q, want %q (\"v\" + VERSION)", got, "v"+want)
 	}
 }
 
@@ -92,6 +108,31 @@ func siteContentVersion(t *testing.T, path string) string {
 		t.Fatalf("parse %s as JSON: %v", path, err)
 	}
 	return strings.TrimSpace(s.ContentVersion)
+}
+
+// siteChangelogHeadVersion returns the version label of the newest entry in
+// web/site.json's `changelog` array — the value the live site renders. It is a
+// distinct surface from content_version: the site shows content_version in its
+// header and the changelog array in its changelog list, and only the former was
+// guarded before v0.12.0.
+func siteChangelogHeadVersion(t *testing.T, path string) string {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	var s struct {
+		Changelog []struct {
+			Version string `json:"version"`
+		} `json:"changelog"`
+	}
+	if err := json.Unmarshal(b, &s); err != nil {
+		t.Fatalf("parse %s as JSON: %v", path, err)
+	}
+	if len(s.Changelog) == 0 {
+		t.Fatalf("%s has an empty changelog array; the newest release must be listed", path)
+	}
+	return strings.TrimSpace(s.Changelog[0].Version)
 }
 
 func changelogHeadVersion(t *testing.T, path string) string {

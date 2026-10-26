@@ -224,8 +224,14 @@
       }
     ]
   },
-  "content_version": "0.11.0",
+  "content_version": "0.12.0",
   "changelog": [
+    {
+      "version": "v0.12.0",
+      "date": "2026-10-27",
+      "zh": "v0.12.0：四项修复 + 一项版本守卫——上游脱敏现在连查询串里的凭据（?api_key=…）也一并抹掉，密钥不再被打进启动日志或 502 响应体；cachepin --help / -h 以退出码 0 正常结束，不再被当成用法错误；上下文布局 linter 直接报出真正导致前缀断裂的未建模字段名（如 cache_control），而不是笼统的 field-order；ParseChatRequest 拒绝 JSON 对象之后的多余数据，不再静默吞掉；版本锁步测试同时覆盖站点 changelog 首条，站点内容不会再悄悄掉队。",
+      "en": "v0.12.0: four fixes plus one version guard — upstream redaction now drops query-string credentials too (?api_key=…), so a key no longer reaches the startup log or a 502 body; cachepin --help / -h exits 0 instead of being reported as a usage error; the context-layout linter names the unmodeled field (e.g. cache_control) that actually broke the prefix instead of the blanket field-order; ParseChatRequest rejects trailing data after the JSON object instead of silently dropping it; and the version-lockstep test now also covers the site changelog head so the site cannot fall behind again."
+    },
     {
       "version": "v0.11.0",
       "date": "2026-09-19",

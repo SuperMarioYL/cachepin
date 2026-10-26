@@ -109,13 +109,19 @@ func (p *Proxy) errorHandler(w http.ResponseWriter, _ *http.Request, err error) 
 }
 
 // RedactedUpstream parses raw as a URL and returns it rendered without any
-// embedded userinfo, so an authenticated upstream (e.g.
+// embedded credential, so an authenticated upstream (e.g.
 // http://user:pass@remote or http://sk-key@remote, where the API key rides in
 // the username) never leaks its credential into a 502 error body or the
 // startup log. url.URL.Redacted is not enough — it masks only the password,
-// leaving a username-only API key exposed — so User is dropped entirely. If
-// raw is not a valid URL it is returned verbatim so a non-URL upstream string
-// is still surfaced.
+// leaving a username-only API key exposed — so User is dropped entirely. The
+// query string is dropped too (v0.12.0,
+// fix-redacted-upstream-query-credential): an OpenAI-compatible gateway key
+// commonly rides there as ?api_key=... and the reverse proxy forwards it on
+// every request, so it is a live credential — the v0.6.0 fix closed the
+// userinfo channel and left this one open. Nothing functional is lost because
+// this string is display-only (the forwarded upstream keeps its query). If raw
+// is not a valid URL it is returned verbatim so a non-URL upstream string is
+// still surfaced.
 func RedactedUpstream(raw string) string {
 	u, err := url.Parse(raw)
 	if err != nil {
@@ -123,6 +129,7 @@ func RedactedUpstream(raw string) string {
 	}
 	c := *u
 	c.User = nil
+	c.RawQuery = ""
 	return c.String()
 }
 
